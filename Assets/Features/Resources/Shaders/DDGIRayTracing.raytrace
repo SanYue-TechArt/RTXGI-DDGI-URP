@@ -1,0 +1,70 @@
+#pragma max_recursion_depth 2
+
+#define DDGI_RAYTRACING 1
+
+// Ray Tracing Shader是独立编译的，需要将用得到的hlsl文件都包含进来
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+#include "Lib/Common/RayTracingCommon.hlsl"
+#include "Lib/DDGIInputs.hlsl"
+#include "Lib/DDGIFuncs.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/UnityInput.hlsl"
+
+[shader("raygeneration")]
+void DDGI_RayGen()
+{
+    uint probeIdx   = DispatchRaysIndex().y;
+    uint rayIdx     = DispatchRaysIndex().x;
+    
+    float3 randomDirection = RotateAboutAxisInRadians(SphericalFibonacci(rayIdx, _RaysPerProbe), _RandomVector, _RandomAngle);
+    randomDirection = normalize(randomDirection);
+    
+    #if 0
+        float3 probeLocation = GetProbeLocation(probeIdx);
+    #else
+        // 根据下面的链接，光线跟踪Shader分支仍在计划中，所以我们目前无法动态开启Probe Relocation功能（其实写两个.raytrace shader，然后在Feature里动态切换也行，但是维护起来比较麻烦）
+        // https://portal.productboard.com/unity/1-unity-platform-rendering-visual-effects/tabs/125-shader-system
+        float3 probeLocation = DDGIGetRelocatedProbeWorldPosition(probeIdx);
+    #endif
+    
+    RayDesc rayDesc;
+    rayDesc.Origin      = probeLocation;
+    rayDesc.Direction   = randomDirection;
+    rayDesc.TMin        = 0.0f;
+    rayDesc.TMax        = FLT_MAX;
+    
+    DDGIPayload payload;
+    payload.radiance        = float3(0, 0, 0);
+    payload.distance        = Max(_ProbeSize) * 1.5f;
+    payload.isShadowPayload = false;
+    payload.isInShadow      = false;
+    
+    TraceRay(_AccelerationStructure, RAY_FLAG_NONE, 0xFF, 0, 0, 0, rayDesc, payload);
+    
+    // 将每一根光线的追踪结果记录在RayBuffer中
+    RayBuffer[(probeIdx * _MaxRaysPerProbe + rayIdx)] = float4(payload.radiance, payload.distance);
+}
+
+[shader("miss")]
+void DDGI_Miss(inout DDGIPayload payload)
+{
+    if(DDGI_SKYLIGHT_MODE == DDGI_SKYLIGHT_MODE_SKYBOX_CUBEMAP)
+    {
+        // 这里应该有个HDR Decode过程？但没Set过来，算了摆了
+        float4 encodedIrradiance = float4(SAMPLE_TEXTURECUBE_LOD(_SkyboxCubemap, sampler_SkyboxCubemap, WorldRayDirection(), 0));
+        payload.radiance         = encodedIrradiance.rgb * _SkyboxTintColor.rgb * _SkyboxExposure * _SkyboxIntensityMultiplier;
+    }
+    else if(DDGI_SKYLIGHT_MODE == DDGI_SKYLIGHT_MODE_GRADIENT)
+    {
+        float3 radiance  = lerp(_EquatorColor.rgb, _GroundColor.rgb, abs(clamp(WorldRayDirection().y, -1.0f, 0.0f)));
+        radiance         = lerp(radiance, _SkyColor.rgb, clamp(WorldRayDirection().y, 0.0f, 1.0f));
+        payload.radiance = radiance;
+    }
+    else if(DDGI_SKYLIGHT_MODE == DDGI_SKYLIGHT_MODE_COLOR)
+    {
+        payload.radiance = _AmbientColor;
+    }
+    else // Unsupported
+    {
+        payload.radiance = 0.0f;
+    }
+}

@@ -1,0 +1,41 @@
+RWTexture2D<float4> _OutputTarget;
+
+#pragma max_recursion_depth 1
+
+#include "Lib/RayTracingCommon.hlsl"
+#include "Lib/LitRayTracingInput.hlsl"
+
+float _CameraFarDistance;
+//RaytracingAccelerationStructure _AccelerationStructure;
+
+[shader("raygeneration")]
+void SimpleColorRayGen()
+{
+    uint2 dispatchIdx = DispatchRaysIndex().xy;      //像素坐标
+    uint2 dispatchDim = DispatchRaysDimensions().xy; //屏幕长宽
+    
+    _OutputTarget[dispatchIdx] = 0.0f; // Clear
+    
+    float3 origin; float3 direction;
+    GenerateCameraRay(origin, direction);
+    
+    RayDesc rayDescriptor;
+    rayDescriptor.Origin    = origin;
+    rayDescriptor.Direction = direction;
+    rayDescriptor.TMin      = 1e-5f;              //射线最小距离
+    rayDescriptor.TMax      = _CameraFarDistance; //射线最远距离，摄像机远裁面
+    
+    RayPayload rayIntersection;
+    rayIntersection.remainingDepth  = 1;
+    rayIntersection.color           = 0.0f;
+    
+    TraceRay(_AccelerationStructure, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, 0xFF, 0, 1, 0, rayDescriptor, rayIntersection);
+    
+    _OutputTarget[dispatchIdx] = rayIntersection.color;
+}
+
+[shader("miss")]
+void MissShader(inout RayPayload rayIntersection : SV_RayPayload)
+{
+    rayIntersection.color = float4(0.0f, 0.0f, 1.0f, 1.0f);
+}
