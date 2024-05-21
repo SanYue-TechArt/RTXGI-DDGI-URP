@@ -3,7 +3,9 @@
 
 #include "Common/Packing.hlsl"
 
-// ====================== Math Utility ======================
+//------------------------------------------------------------------------
+// Math Utility
+//------------------------------------------------------------------------
 
 float Min(float2 v) { return min(v.x, v.y); }
 float Min(float3 v) { return min(Min(v.xy), v.z); }
@@ -51,31 +53,52 @@ float3x3 AngleAxis3x3(float angle, float3 axis)
 		);
 }
 
-// ==========================================================
 
-
-// ====================== Randomize Functions ======================
+//------------------------------------------------------------------------
+// Randomize Functions
+//------------------------------------------------------------------------
 
 // Ray Tracing Gems 2: Essential Ray Generation Shaders
 float3 SphericalFibonacci(float i, float n)
 {
 	const float PHI = sqrt(5) * 0.5f + 0.5f;
-	float fraction = (i * (PHI - 1)) - floor(i * (PHI - 1));
-	float phi = 2.0f * PI * fraction;
-	float cosTheta = 1.0f - (2.0f * i + 1.0f) * (1.0f / n);
-	float sinTheta = sqrt(saturate(1.0 - cosTheta * cosTheta));
+	float fraction	= (i * (PHI - 1)) - floor(i * (PHI - 1));
+	float phi		= 2.0f * PI * fraction;
+	float cosTheta	= 1.0f - (2.0f * i + 1.0f) * (1.0f / n);
+	float sinTheta	= sqrt(saturate(1.0 - cosTheta * cosTheta));
+	
 	return float3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
 }
 
-float3 GetRayDirection(uint rayIndex, uint numRays, float3x3 randomRotation = float3x3(1, 0, 0, 0, 1, 0, 0, 0, 1))
+float3 DDGIGetProbeRayDirection(int rayIndex)
 {
-	return mul(randomRotation, SphericalFibonacci(rayIndex, numRays)); 
+	bool isFixedRay = false;
+	int sampleIndex = rayIndex;
+	int numRays		= _RaysPerProbe;
+	
+	//if (volume.probeRelocationEnabled || volume.probeClassificationEnabled)
+	if ((DDGI_PROBE_RELOCATION == DDGI_PROBE_RELOCATION_ON) || false)
+	{
+		isFixedRay  = (rayIndex < RTXGI_DDGI_NUM_FIXED_RAYS);
+		sampleIndex = isFixedRay ? rayIndex : (rayIndex - RTXGI_DDGI_NUM_FIXED_RAYS);
+		numRays		= isFixedRay ? RTXGI_DDGI_NUM_FIXED_RAYS : (numRays - RTXGI_DDGI_NUM_FIXED_RAYS);
+	}
+
+	// Get a ray direction on the sphere
+	float3 direction = SphericalFibonacci(sampleIndex, numRays);
+
+	// Don't rotate fixed rays so relocation/classification are temporally stable
+	if (isFixedRay) return normalize(direction);
+
+	// Apply Rotation
+	float3 randomDirection = RotateAboutAxisInRadians(direction, _RandomVector, _RandomAngle);
+	return normalize(randomDirection);
 }
 
-// =================================================================
 
-
-// ====================== Light Fetcher ======================
+//------------------------------------------------------------------------
+// Light Fetcher
+//------------------------------------------------------------------------
 
 Light GetDDGIDirectionalLight(int index)
 {
@@ -116,67 +139,10 @@ Light GetDDGIPunctualLight(int index, float3 positionWS)
 	return light;
 }
 
-// ==========================================================
 
-
-// ====================== Probe Distribution Info =======================
-
-int DDGIGetProbesPerPlane(int3 probeCounts)
-{
-	#if 0
-	// Z-UP
-	return (probeCounts.x * probeCounts.y);
-	#else
-	// Y-UP
-	return (probeCounts.x * probeCounts.z);
-#endif
-}
-
-// ======================================================================
-
-
-// ====================== Probe Texture Coordinate Indexing ======================
-
-uint2 GetProbeTexelCoord(uint3 gridCoord, uint numProbeInteriorTexels)
-{
-	uint numProbeTexels = 1 + numProbeInteriorTexels + 1;
-	return uint2(gridCoord.x + gridCoord.y * _ProbeCount.x, gridCoord.z) * numProbeTexels + 1;
-}
-
-float2 GetNormalizedProbeTextureUV(uint3 probeIndex3D, float3 direction, uint numProbeInteriorTexels)
-{
-	uint numProbeTexels = 1 + numProbeInteriorTexels + 1;
-	uint textureWidth = numProbeTexels * _ProbeCount.x * _ProbeCount.y;
-	uint textureHeight = numProbeTexels * _ProbeCount.z;
-
-	float2 pixel = GetProbeTexelCoord(probeIndex3D, numProbeInteriorTexels);
-	pixel += (EncodeNormalOctahedron(normalize(direction)) * 0.5f + 0.5f) * numProbeInteriorTexels;
-	return pixel / float2(textureWidth, textureHeight);
-}
-
-// Reference: NVIDIA RTXGI-DDGI
-// 本函数将一维的probe索引转换为Tex2DArray的采样UV（且假定每个Probe只拥有一个纹素）
-// TODO:我们先前没有使用Tex2DArray更新Radiance和Distance，故该函数目前只用于Probe Relocation阶段
-uint3 DDGIGetProbeTexelCoords(int probeIndex)
-{
-#if 0
-	// Z-UP
-	int probesPerPlane = DDGIGetProbesPerPlane(_ProbeCount);
-	int planeIndex = int(probeIndex / probesPerPlane);
-	
-	int x = (probeIndex % _ProbeCount.x);
-	int y = (probeIndex / _ProbeCount.x) % _ProbeCount.y;
-#else
-	// Y-UP
-	int probesPerPlane = DDGIGetProbesPerPlane(_ProbeCount);
-	int planeIndex = int(probeIndex / probesPerPlane);
-
-	int x = (probeIndex % _ProbeCount.x);
-	int y = (probeIndex / _ProbeCount.x) % _ProbeCount.z;
-#endif
-
-	return uint3(x, y, planeIndex);
-}
+//------------------------------------------------------------------------
+// Probe Data Fetcher
+//------------------------------------------------------------------------
 
 #if defined(DDGI_VISUALIZATION) || defined(DDGI_RAYTRACING) || defined(FORWARD_USE_DDGI)
 	float3 DDGILoadProbeDataOffset(uint3 coords)
@@ -197,61 +163,31 @@ uint3 DDGIGetProbeTexelCoords(int probeIndex)
 	}
 #endif
 
-// ===============================================================================
 
-
-// ====================== Probe Indexing ======================
-
-int GetProbeIndexFromGridCoord(uint3 gridCoord)
-{
-#if 0
-	// Z-UP
-	return int(gridCoord.x + gridCoord.y * _ProbeCount.x + gridCoord.z * _ProbeCount.x * _ProbeCount.y);
-#else
-	// Y-UP
-	return int(gridCoord.x + gridCoord.z * _ProbeCount.x + gridCoord.y * _ProbeCount.x * _ProbeCount.z);
-#endif
-}
-
-uint3 GetProbeGridCoordFromIndex(uint probeIndex)
-{
-#if 0
-	// Z-UP
-	uint3 gridCoord;
-	gridCoord.x = probeIndex % _ProbeCount.x;
-	gridCoord.y = (probeIndex % (_ProbeCount.x * _ProbeCount.y)) / _ProbeCount.x;
-	gridCoord.z = probeIndex / (_ProbeCount.x * _ProbeCount.y);
-#else
-	// Y-UP
-	uint3 gridCoord;
-	gridCoord.x = probeIndex % _ProbeCount.x;
-	gridCoord.y = probeIndex / (_ProbeCount.x * _ProbeCount.z);
-	gridCoord.z = (probeIndex / _ProbeCount.x) % _ProbeCount.z;
-#endif
-
-	return gridCoord;
-}
+//------------------------------------------------------------------------
+// Probe World Position
+//------------------------------------------------------------------------
 
 // 根据probe的三维网格坐标获取其世界空间位置（不考虑Relocation）
-float3 GetRawProbeWorldPosition(uint3 gridCoord)
+float3 DDGIGetProbeWorldPosition(uint3 gridCoord)
 {
 	return _StartPosition + _ProbeSize * gridCoord;
 }
 
 // 根据probe的一维网格索引获取其世界空间位置（不考虑Relocation）
-float3 GetRawProbeWorldPosition(uint probeIndex)
+float3 DDGIGetProbeWorldPosition(uint probeIndex)
 {
-	uint3 gridCoord = GetProbeGridCoordFromIndex(probeIndex);
-	return GetRawProbeWorldPosition(gridCoord);
+	uint3 gridCoord = DDGIGetProbeCoords(probeIndex);
+	return DDGIGetProbeWorldPosition(gridCoord);
 }
 
 // 根据probe的三维网格坐标获取其世界空间位置（考虑Relocation）
 float3 DDGIGetRelocatedProbeWorldPosition(int3 probeCoords)
 {
-	float3 probeWorldPosition = GetRawProbeWorldPosition(probeCoords);
+	float3 probeWorldPosition = DDGIGetProbeWorldPosition(probeCoords);
 
-	int probeIndex		= GetProbeIndexFromGridCoord(probeCoords);
-	uint3 coords		= DDGIGetProbeTexelCoords(probeIndex);
+	int probeIndex		= DDGIGetProbeIndex(probeCoords);
+	uint3 coords		= DDGIGetProbeTexelCoordsOneByOne(probeIndex);
 	probeWorldPosition	+= DDGILoadProbeDataOffset(coords);
 
 	return probeWorldPosition;
@@ -260,19 +196,19 @@ float3 DDGIGetRelocatedProbeWorldPosition(int3 probeCoords)
 // 根据probe的一维网格索引获取其世界空间位置（考虑Relocation）
 float3 DDGIGetRelocatedProbeWorldPosition(int probeIndex)
 {
-	int3 probeCoords = GetProbeGridCoordFromIndex(probeIndex);
+	int3 probeCoords = DDGIGetProbeCoords(probeIndex);
 	return DDGIGetRelocatedProbeWorldPosition(probeCoords);
 }
 
 // 接受一个世界空间位置P，返回与该位置相关的基准probe网格坐标（用于确定P所在的Probe网格块）
-uint3 GetBaseGridCoordFromWorldPos(float3 worldPos)
+uint3 DDGIGetBaseGridCoords(float3 worldPos)
 {
 	return clamp(uint3((worldPos - _StartPosition) / _ProbeSize), uint3(0, 0, 0), uint3(_ProbeCount) - uint3(1, 1, 1));
 }
 
-// ============================================================
-
-
+//------------------------------------------------------------------------
+// Runtime Probe Sampling
+//------------------------------------------------------------------------
 
 float3 ComputeBias(float3 normal, float3 viewDirection, float b = 0.2f)
 {
@@ -291,72 +227,79 @@ float3 ComputeBias(float3 normal, float3 viewDirection, float b = 0.2f)
 //https://github.com/simco50/D3D12_Research/blob/master/D3D12/Resources/Shaders/RayTracing/DDGICommon.hlsli
 float3 SampleDDGIIrradiance(float3 P, float3 N, float3 Wo)
 {
-	float3 direction = N;
-	float3 position = P;
+	float3 direction		= N;
+	float3 biasedPosition	= P;
 	float3 unbiasedPosition = P;
-	float  volumeWeight = 1.0f;
+	float  volumeWeight		= 1.0f;
 
-	position += ComputeBias(direction, -Wo);
+	biasedPosition += ComputeBias(direction, -Wo);
 
-	float3 relativeCoordinates = (position - _StartPosition) / _ProbeSize;
+	// 当着色点位于Volume区域外，我们将提前返回
+	// 当着色点逼近Volume边界（但没有超出volume区域），我们对其辐照度进行平滑过渡
+	const float3 relativeCoordinates = (biasedPosition - _StartPosition) / _ProbeSize;
 	for(uint i = 0; i < 3; ++i)
 	{
 		volumeWeight *= lerp(0, 1, saturate(relativeCoordinates[i]));
 		if(relativeCoordinates[i] > _ProbeCount[i] - 2)
 		{
-			float x = saturate(relativeCoordinates[i] - _ProbeCount[i] + 2);
-			volumeWeight *= lerp(1, 0, x);
+			const float x = saturate(relativeCoordinates[i] - _ProbeCount[i] + 2);
+			volumeWeight  *= lerp(1, 0, x);
 		}
 	}
 	if(volumeWeight <= 0.0f) return 0.0f;
-	volumeWeight = 1.0f;
 
 	// 计算relativeCoordinates时就需要偏移position（参考NVIDIA）
 	// 如果在这里才偏移position（Arida的实现）会导致trilinear插值出现网格瑕疵
 	//position += ComputeBias(direction, -Wo);
 
-	uint3 baseProbeCoordinates = floor(relativeCoordinates);
-	float3 baseProbePosition = GetRawProbeWorldPosition(baseProbeCoordinates);
-	float3 alpha = saturate((position - baseProbePosition) / _ProbeSize);
+	const uint3  baseProbeCoords	= floor(relativeCoordinates);
+	const float3 baseProbePosition	= DDGIGetProbeWorldPosition(baseProbeCoords);
+	const float3 alpha				= saturate((biasedPosition - baseProbePosition) / _ProbeSize);
 
 	float3 sumIrradiance = 0;
-	float sumWeight = 0;
+	float  sumWeight	 = 0;
 
 	for (uint j = 0; j < 8; ++j)
 	{
 		uint3 indexOffset = uint3(j, j >> 1u, j >> 2u) & 1u;
 
-		uint3 probeCoordinates = clamp(baseProbeCoordinates + indexOffset, 0, _ProbeCount - 1);
-		#if 0
-			float3 probePosition = GetProbeLocationFromGridCoord(probeCoordinates);
-		#else
-			// Consider Relocation now
-			float3 probePosition = DDGIGetRelocatedProbeWorldPosition(probeCoordinates);
-		#endif
+		const uint3 probeCoords = clamp(baseProbeCoords + indexOffset, 0, _ProbeCount - 1);
 
-		float3 relativeProbePosition = position - probePosition;
-		float3 probeDirection = -normalize(relativeProbePosition);
+		float3 probePosition = 0.0f;
+		if (DDGI_PROBE_RELOCATION == DDGI_PROBE_RELOCATION_OFF)
+			probePosition = DDGIGetProbeWorldPosition(probeCoords);
+		else
+			probePosition = DDGIGetRelocatedProbeWorldPosition(probeCoords);
 
-		float3 trilinear = max(0.001f, lerp(1.0f - alpha, alpha, indexOffset));
-        float trilinearWeight = (trilinear.x * trilinear.y * trilinear.z);
+		uint probeIndex = DDGIGetProbeIndex(probeCoords);
+
+		float3 relativeProbePosition = biasedPosition - probePosition;
+		float3 probeDirection		 = -normalize(relativeProbePosition);
+
+		float3 trilinear		= max(0.001f, lerp(1.0f - alpha, alpha, indexOffset));
+        float trilinearWeight	= (trilinear.x * trilinear.y * trilinear.z);
 
 		float weight = 1.0f;
 
+		// --------------------------------
 		// Backface Weighting
+		// --------------------------------
 		#if 0
 			// Arida Implementation.
 			weight *= saturate(dot(probeDirection, direction));
 		#else
 			// NVIDIA Implementation.
-			float wrapShading = dot(normalize(probePosition - unbiasedPosition), direction) * 0.5f + 0.5f;
+			const float wrapShading = dot(normalize(probePosition - unbiasedPosition), direction) * 0.5f + 0.5f;
 			weight *= (wrapShading * wrapShading) + 0.2f;
 		#endif
 
+		// --------------------------------
 		// Chebyshev Visibility Test
-		float2 distanceUV = GetNormalizedProbeTextureUV(probeCoordinates, -probeDirection, PROBE_DISTANCE_TEXELS);
-		float probeDistance = length(relativeProbePosition);
+		// --------------------------------
+		float3 probeDistanceUV	= DDGIGetProbeUV(probeIndex, -probeDirection, PROBE_DISTANCE_TEXELS);
+		float  probeDistance	= length(relativeProbePosition);
 		// https://developer.download.nvidia.com/SDK/10/direct3d/Source/VarianceShadowMapping/Doc/VarianceShadowMapping.pdf
-		float2 moments = SAMPLE_TEXTURE2D_LOD(_DistanceTextureHistory, sampler_LinearClamp, distanceUV, 0).xy;
+		float2 moments = SAMPLE_TEXTURE2D_ARRAY_LOD(_ProbeDistanceHistory, sampler_LinearClamp, probeDistanceUV.xy, probeDistanceUV.z, 0).xy;
 		float variance = abs(Pow2(moments.x) - moments.y);
 		float chebyshev = 1.0f;
 		if(probeDistance > moments.x)
@@ -366,9 +309,12 @@ float3 SampleDDGIIrradiance(float3 P, float3 N, float3 Wo)
 			chebyshev = max(Pow3(chebyshev), 0.0);
 		}
 		weight *= max(chebyshev, 0.05f);
+		
 		weight = max(0.000001f, weight);
 
+		// --------------------------------
 		// Threshold and Trilinear Weight.
+		// --------------------------------
 		const float crushThreshold = 0.2f;
 		if (weight < crushThreshold)
 		{
@@ -376,12 +322,12 @@ float3 SampleDDGIIrradiance(float3 P, float3 N, float3 Wo)
 		}
 		weight *= trilinearWeight;
 
-		float2 uv = GetNormalizedProbeTextureUV(probeCoordinates, direction, PROBE_IRRADIANCE_TEXELS);
-		float3 irradiance = SAMPLE_TEXTURE2D_LOD(_IrradianceTextureHistory, sampler_LinearClamp, uv, 0).rgb;
-		irradiance = pow(irradiance, 2.5f); // Gamma Correct.
+		float3 probeIrradianceUV = DDGIGetProbeUV(probeIndex, direction, PROBE_IRRADIANCE_TEXELS);
+		float3 irradiance		 = SAMPLE_TEXTURE2D_ARRAY_LOD(_ProbeIrradianceHistory, sampler_LinearClamp, probeIrradianceUV.xy, probeIrradianceUV.z, 0).rgb;
+		irradiance				 = pow(irradiance, 2.5f); // Gamma Correct.
 
 		sumIrradiance += irradiance * weight;
-		sumWeight += weight;
+		sumWeight	  += weight;
 	}
 	
 	if(sumWeight == 0) return 0.0f;

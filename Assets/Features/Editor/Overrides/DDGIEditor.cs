@@ -18,8 +18,11 @@ public sealed class DDGIEditor : VolumeComponentEditor
     private SerializedDataParameter mProbeRadius;
     private SerializedDataParameter mDebugIndirect;
     private SerializedDataParameter mIndirectDebugMode;
+    private SerializedDataParameter mEnableProbeRelocation;
     private SerializedDataParameter mProbeMinFrontfaceDistance;
     private SerializedDataParameter mProbeFixedRayBackfaceThreshold;
+    private SerializedDataParameter mEnableProbeVariability;
+    private SerializedDataParameter mProbeVariabilityThreshold;
     private SerializedDataParameter mUseCustomBounds;
     private SerializedDataParameter mProbeCountX;
     private SerializedDataParameter mProbeCountY;
@@ -39,8 +42,11 @@ public sealed class DDGIEditor : VolumeComponentEditor
         mProbeRadius = Unpack(o.Find(x => x.probeRadius));
         mDebugIndirect = Unpack(o.Find(x => x.debugIndirect));
         mIndirectDebugMode = Unpack(o.Find(x => x.indirectDebugMode));
+        mEnableProbeRelocation = Unpack(o.Find(x => x.enableProbeRelocation));
         mProbeMinFrontfaceDistance = Unpack(o.Find(x => x.probeMinFrontfaceDistance));
         mProbeFixedRayBackfaceThreshold = Unpack(o.Find(x => x.probeFixedRayBackfaceThreshold));
+        mEnableProbeVariability = Unpack(o.Find(x => x.enableProbeVariability));
+        mProbeVariabilityThreshold = Unpack(o.Find(x => x.probeVariabilityThreshold));
         mUseCustomBounds = Unpack(o.Find(x => x.useCustomBounds));
         mProbeCountX = Unpack(o.Find(x => x.probeCountX));
         mProbeCountY = Unpack(o.Find(x => x.probeCountY));
@@ -67,6 +73,32 @@ public sealed class DDGIEditor : VolumeComponentEditor
 
     #endregion
 
+    
+    #region Relocation Settings
+
+        PropertyField(mEnableProbeRelocation);
+        if (mEnableProbeRelocation.value.boolValue)
+        {
+            PropertyField(mProbeMinFrontfaceDistance);
+            PropertyField(mProbeFixedRayBackfaceThreshold);
+        }
+        EditorGUILayout.Space(5.0f);
+
+    #endregion
+
+
+    #region Variability Settings
+
+        PropertyField(mEnableProbeVariability);
+        if (mEnableProbeVariability.value.boolValue)
+        {
+            PropertyField(mProbeVariabilityThreshold);
+            EditorGUILayout.HelpBox("Probe Variability当前属于实验性功能，且不支持自发光物体，请酌情考虑使用", MessageType.Info);
+        }
+        EditorGUILayout.Space(5.0f);
+
+    #endregion
+    
         
     #region Debug Options
 
@@ -85,15 +117,6 @@ public sealed class DDGIEditor : VolumeComponentEditor
             PropertyField(mIndirectDebugMode);
             EditorGUI.indentLevel--;
         }
-        EditorGUILayout.Space(5.0f);
-
-    #endregion
-
-
-    #region Relocation Settings
-
-        PropertyField(mProbeMinFrontfaceDistance);
-        PropertyField(mProbeFixedRayBackfaceThreshold);
         EditorGUILayout.Space(5.0f);
 
     #endregion

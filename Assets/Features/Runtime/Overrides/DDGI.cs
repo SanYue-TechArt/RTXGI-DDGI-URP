@@ -38,6 +38,31 @@ public class DDGI : VolumeComponent, IPostProcessComponent
 #endregion
 
 
+#region Relocation Settings
+
+    [Header("Relocation Settings")]
+    public BoolParameter enableProbeRelocation = new BoolParameter(true);
+        
+    public ClampedFloatParameter probeMinFrontfaceDistance = new ClampedFloatParameter(0.3f, 0.0f, 2.0f);
+            
+    [Tooltip("当Probe中命中背面的光线比例超过该数值时，将对Probe进行偏移处理（由于Relocation过程不可逆，调高该数值时需要刷新DDGI设置）")]
+    public ClampedFloatParameter probeFixedRayBackfaceThreshold = new ClampedFloatParameter(0.25f, 0.0f, 1.0f);
+
+#endregion
+
+
+#region Probe Variability Settings
+
+    [Header("Probe Variability Settings (Experimental)")]
+    [Tooltip("开启后，系统将分析GI结果的变异性 (Variability)，如果变异性较低，则表明积分结果收敛，我们将停止更新Probe Texture，避免间接光闪烁，同时节省开销【注：该特性不支持自发光物体！】")]
+    public BoolParameter enableProbeVariability = new BoolParameter(false);
+
+    [Tooltip("当变异性低于该值时GI将停止更新，该值越大则积分会更早收敛【注：过高的值可能会导致GI收敛性不足；过低的值则该特性不能防止间接光闪烁】")]
+    public ClampedFloatParameter probeVariabilityThreshold = new ClampedFloatParameter(0.025f, 0.0f, 1.0f);
+
+#endregion
+
+
 #region Debug Options
 
     [Header("Debug Options")]
@@ -51,17 +76,6 @@ public class DDGI : VolumeComponent, IPostProcessComponent
     public BoolParameter debugIndirect = new BoolParameter(false);
 
     public IndirectDebugParameter indirectDebugMode = new IndirectDebugParameter(IndirectDebugMode.FullIndirectRadiance);
-
-#endregion
-
-
-#region Relocation Settings
-
-    [Header("Relocation Settings (Need Refresh)")]
-    public ClampedFloatParameter probeMinFrontfaceDistance = new ClampedFloatParameter(0.3f, 0.0f, 2.0f);
-        
-    [Tooltip("当Probe中命中背面的光线比例超过该数值时，将对Probe进行偏移处理（由于Relocation过程不可逆，调高该数值时需要刷新DDGI设置）")]
-    public ClampedFloatParameter probeFixedRayBackfaceThreshold = new ClampedFloatParameter(0.25f, 0.0f, 1.0f);
 
 #endregion
 

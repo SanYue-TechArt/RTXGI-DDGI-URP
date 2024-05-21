@@ -3,7 +3,10 @@
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
 #include "Lib/DDGIInputs.hlsl"
+#include "Lib/DDGIProbeIndexing.hlsl"
 #include "Lib/DDGIFuncs.hlsl"
+
+RWTexture2DArray<float> _ProbeVariability;
 
 #define CACHE_SIZE PROBE_IRRADIANCE_TEXELS * PROBE_IRRADIANCE_TEXELS
 groupshared float3 RadianceCache[CACHE_SIZE];
@@ -22,69 +25,138 @@ static const uint4 BORDER_OFFSETS[BORDER_TEXELS] =
     uint4(6, 6, 1, 7), uint4(5, 6, 2, 7), uint4(4, 6, 3, 7), uint4(3, 6, 4, 7), uint4(2, 6, 5, 7), uint4(1, 6, 6, 7) 
 };
 
-// Thread group count: (num_probe_flat, 1, 1)
+// Thread group count: (num_probe_x, num_probe_z, num_probe_y)
 // 每个线程组代表一个Probe，线程组内的每一个线程处理该Probe对应的八面体投影Texel
 // 每个线程都会从DDGI Ray Trace阶段得到的RayBuffer中获取场景当前帧的辐照度数据，计算全局光照后，与前一帧的辐照度数据混合，存储进对应Texel
 [numthreads(PROBE_IRRADIANCE_TEXELS, PROBE_IRRADIANCE_TEXELS, 1)]
-void DDGIUpdateIrradiance (
+void DDGIUpdateIrradiance(
     uint3 GroupId           : SV_GroupID,
     uint3 GroupThreadId     : SV_GroupThreadID,
     uint3 DispatchThreadId  : SV_DispatchThreadID,
     uint  GroupIndex        : SV_GroupIndex)
 {
-    uint  probeIdx              = GroupId.x;
-    uint3 probeGridCoords       = GetProbeGridCoordFromIndex(probeIdx);
-    uint2 texelLocation         = GetProbeTexelCoord(probeGridCoords, PROBE_IRRADIANCE_TEXELS);
-    uint2 cornerTexelLocation   = texelLocation - 1u;
-    texelLocation += GroupThreadId.xy;
+    // 注意这里我们使用的DDGIGetProbeIndex函数接受的输入是Probe的网格坐标，但我们的调度线程组是已经经过反转的，所以需要再次反转回来
+    uint  probeIndex          = DDGIGetProbeIndex(GroupId.xzy);
+    uint3 cornerTexelLocation = DDGIGetProbeBaseTexelCoords(probeIndex, PROBE_IRRADIANCE_TEXELS);
+    uint3 baseTexelLocation   = cornerTexelLocation + uint3(1, 1, 0);
+    uint3 texelLocation       = baseTexelLocation + uint3(GroupThreadId.xy, 0);
 
-    float3 prevRadiance = LOAD_TEXTURE2D_LOD(_IrradianceTextureHistory, texelLocation, 0).rgb;
+    float3 prevRadiance = LOAD_TEXTURE2D_ARRAY_LOD(_ProbeIrradianceHistory, texelLocation.xy, texelLocation.z, 0).rgb;
 
-    float3   probeDirection = DecodeNormalOctahedron(((GroupThreadId.xy + 0.5f) / (float)PROBE_IRRADIANCE_TEXELS) * 2 - 1);
-    float3x3 randomRotation = AngleAxis3x3(_RandomAngle, _RandomVector);
+    float3 probeDirection = DecodeNormalOctahedron(((GroupThreadId.xy + 0.5f) / (float)PROBE_IRRADIANCE_TEXELS) * 2 - 1);
 
-    float weightSum = 0.0f;
-    float3 result = 0.0f;
-    uint remainingRays = _RaysPerProbe;
-    uint offset = 0;
-    while(remainingRays > 0)
+    // NVIDIA SDK的Shared Memory存储每一根光线的数据，但是实践中我们的光线数量允许重新调整
+    // 然而Shared Memory的大小必须是编译期确定的，如果应用程序调整光线预算，那么必须重新编译Shader，这不方便操作
+    // 由于漫反射的低频性质，Probe的Texel数量基本是不改的，因此我们将Shared Memory的大小设置为单个probe的texel总数（通常小于光线数量）
+    // Shared Memory读满后，马上进行卷积评估操作，然后再存下一批光线的数据
+    float4 result         = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    uint   remainingRays  = _RaysPerProbe;
+    uint   offset         = 0;
+
+    if((DDGI_PROBE_RELOCATION == DDGI_PROBE_RELOCATION_ON) || false)
+    {
+        remainingRays -= RTXGI_DDGI_NUM_FIXED_RAYS;
+        offset        += RTXGI_DDGI_NUM_FIXED_RAYS;
+    }
+
+    // ------------------------------
+    // Irradiance Evaluation
+    // ------------------------------
+    while (remainingRays > 0)
     {
         uint numRays = min(CACHE_SIZE, remainingRays);
         if(GroupIndex < numRays)
         {
-            RadianceCache[GroupIndex] = RayBuffer[probeIdx * _MaxRaysPerProbe + offset + GroupIndex].rgb;
-            DirectionCache[GroupIndex] = GetRayDirection(offset + GroupIndex, _RaysPerProbe, randomRotation);
+            RadianceCache[GroupIndex]  = RayBuffer[probeIndex * _MaxRaysPerProbe + offset + GroupIndex].rgb;
+            DirectionCache[GroupIndex] = DDGIGetProbeRayDirection(offset + GroupIndex);
         }
         GroupMemoryBarrierWithGroupSync();
 
         for(uint i = 0; i < numRays; ++i)
         {
-            float3 radiance = RadianceCache[i].rgb;
+            float3 radiance  = RadianceCache[i].rgb;
             float3 direction = DirectionCache[i];
-            float weight = saturate(dot(probeDirection, direction));
-            result += weight * radiance;
-            weightSum += weight;
+            float  weight    = saturate(dot(probeDirection, direction));
+            
+            result  += float4(weight * radiance, weight);
         }
 
         remainingRays -= numRays;
-        offset += numRays;
+        offset        += numRays;
+    }
+    
+    // -----------------------------
+    // Irradiance Post Processing 
+    // -----------------------------
+    float epsilon = 1e-9f * float(_RaysPerProbe);
+    if ((DDGI_PROBE_RELOCATION == DDGI_PROBE_RELOCATION_ON) || false)
+    {
+        epsilon -= RTXGI_DDGI_NUM_FIXED_RAYS; 
+    }
+    epsilon *= 1e-9f;
+    result.rgb *= 1.0f / max(2.0f * result.a, epsilon);
+    
+    float hysteresis = _HistoryBlendWeight;
+    if(dot(prevRadiance, prevRadiance) == 0) hysteresis = 0.0f;
+
+    // Tone-mapping Gamma Adjustment (probeIrradianceEncodingGamma = 5.0f)
+    result.rgb = pow(abs(result.rgb), rcp(5.0f));
+
+    float3 delta = result.rgb - prevRadiance.rgb;
+
+    // 在时域混合之前缓存当前帧Irradiance评估结果，用于Probe Variability阶段
+    float3 irradianceSample = result.rgb;
+
+    if(Max(prevRadiance.rgb - result.rgb) > 0.2f /* probeIrradianceThreshold */)
+    {
+        // 当灯光剧烈变化的时候，适当降低历史帧权重
+        hysteresis = max(0.0f, hysteresis - 0.75f);
     }
 
-    const float epsilon = 1e-9f * float(_RaysPerProbe);
-    result *= 1.0f / max(2.0f * weightSum, epsilon);
+    if(Luminance(delta) > 1.0f /* probeBrightnessThreshold */)
+    {
+        // 当灯光剧烈变化的时候，对irradiance更新做适当的clamp
+        delta *= 0.25f;
+    }
 
-    result = pow(abs(result), rcp(5.0f));
-    const float historyBlendWeight = saturate(1.0f - _HistoryBlendWeight);
-    result = lerp(prevRadiance, result, historyBlendWeight);
+    static const float c_threshold = 1.f / 1024.f;
+    float3 lerpDelta = (1.f - hysteresis) * delta;
+    if (Max(result.rgb) < Max(prevRadiance.rgb))
+    {
+        lerpDelta = min(max(c_threshold, abs(lerpDelta)), abs(delta)) * sign(lerpDelta);
+    }
+    result = float4(prevRadiance.rgb + lerpDelta, 1.f);
+    
+    //result.rgb = lerp(result.rgb, prevRadiance, hysteresis);
 
-    _IrradianceTexture[texelLocation] = float4(result, 1);
+    if(DDGI_PROBE_REDUCTION == DDGI_PROBE_REDUCTION_ON)
+    {
+        // 我们调度的线程和Variability Texture刚好是一一对应的
+        const uint3 coordsOnyByOne  = DDGIGetProbeTexelCoordsOneByOne(probeIndex);
+        const uint3 threadCoords    = uint3(coordsOnyByOne.x * PROBE_IRRADIANCE_TEXELS, coordsOnyByOne.y * PROBE_IRRADIANCE_TEXELS, coordsOnyByOne.z) + uint3(GroupThreadId.xy, 0);
+        
+        // 计算辐照度变异性
+        float3 irradianceMean           = result.rgb;
+        float3 irradianceSigma2         = (irradianceSample - prevRadiance) * (irradianceSample - irradianceMean);
+        float  luminanceSigma2          = Luminance(irradianceSigma2);
+        float  luminanceMean            = Luminance(irradianceMean);
+        float  coefficientOfVariation   = (luminanceMean <= c_threshold) ? 0.0f : sqrt(luminanceSigma2) / luminanceMean;
 
-    GroupMemoryBarrierWithGroupSync();
+        _ProbeVariability[threadCoords].r = coefficientOfVariation;
+    }
 
+    _ProbeIrradiance[texelLocation] = float4(result.rgb, 1);
+
+    //GroupMemoryBarrierWithGroupSync();
+    AllMemoryBarrierWithGroupSync();
+
+    // ------------------------------
+    // Irradiance Border Update
+    // ------------------------------
     for (uint index = GroupIndex; index < BORDER_TEXELS; index += PROBE_IRRADIANCE_TEXELS * PROBE_IRRADIANCE_TEXELS)
     {
-        const uint2 sourceIndex = cornerTexelLocation + BORDER_OFFSETS[index].xy;
-        const uint2 targetIndex = cornerTexelLocation + BORDER_OFFSETS[index].zw;
-        _IrradianceTexture[targetIndex] = _IrradianceTexture[sourceIndex];
+        const uint3 sourceIndex = uint3(cornerTexelLocation + BORDER_OFFSETS[index].xy, cornerTexelLocation.z);
+        const uint3 targetIndex = uint3(cornerTexelLocation + BORDER_OFFSETS[index].zw, cornerTexelLocation.z);
+        _ProbeIrradiance[targetIndex] = _ProbeIrradiance[sourceIndex];
     }
 }

@@ -4,12 +4,13 @@
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
 #include "Lib/DDGIInputs.hlsl"
+#include "Lib/DDGIProbeIndexing.hlsl"
 #include "Lib/DDGIFuncs.hlsl"
 
 [numthreads(32, 1, 1)]
 void DDGIResetRelocation (uint3 DispatchThreadID : SV_DispatchThreadID)
 {
-    uint3 outputCoords = DDGIGetProbeTexelCoords(DispatchThreadID.x);
+    uint3 outputCoords = DDGIGetProbeTexelCoordsOneByOne(DispatchThreadID.x);
 
     _ProbeData[outputCoords] = float4(0.0f, 0.0f, 0.0f, 1.0f);
 }
@@ -22,21 +23,20 @@ void DDGIRelocateProbe (uint3 DispatchThreadID : SV_DispatchThreadID)
     const int numProbesFlat = _ProbeCount.x * _ProbeCount.y * _ProbeCount.z;
     if(probeIndex > numProbesFlat) return;
 
-    const uint3 outputCoords = DDGIGetProbeTexelCoords(DispatchThreadID.x);
+    const uint3 outputCoords = DDGIGetProbeTexelCoordsOneByOne(DispatchThreadID.x);
 
     float3 offset = DDGILoadProbeDataOffset(outputCoords);
 
-    float3x3 randomRotation = AngleAxis3x3(_RandomAngle, _RandomVector);
-
-    int   closestBackfaceIndex = -1;
-    int   closestFrontfaceIndex = -1;
-    int   farthestFrontfaceIndex = -1;
-    float closestBackfaceDistance = 1e27f;
-    float closestFrontfaceDistance = 1e27f;
+    int   closestBackfaceIndex      = -1;
+    int   closestFrontfaceIndex     = -1;
+    int   farthestFrontfaceIndex    = -1;
+    float closestBackfaceDistance   = 1e27f;
+    float closestFrontfaceDistance  = 1e27f;
     float farthestFrontfaceDistance = 0.f;
-    float backfaceCount = 0.f;
+    float backfaceCount             = 0.f;
 
-    int numRays = _RaysPerProbe;
+    //int numRays = _RaysPerProbe;
+    int numRays = min(_RaysPerProbe, RTXGI_DDGI_NUM_FIXED_RAYS);
 
     for(int rayIndex = 0; rayIndex < numRays; ++rayIndex)
     {
@@ -80,14 +80,14 @@ void DDGIRelocateProbe (uint3 DispatchThreadID : SV_DispatchThreadID)
     {
         // If at least one backface triangle is hit AND backfaces are hit by enough probe rays,
         // assume the probe is inside geometry and move it outside of the geometry.
-        float3 closestBackfaceDirection = GetRayDirection(closestBackfaceIndex, _RaysPerProbe, randomRotation);
+        float3 closestBackfaceDirection = DDGIGetProbeRayDirection(closestBackfaceIndex);
         fullOffset = offset + (closestBackfaceDirection * (closestBackfaceDistance + _ProbeMinFrontfaceDistance * 0.5f));
     }
     else if (closestFrontfaceDistance < _ProbeMinFrontfaceDistance)
     {
         // Don't move the probe if moving towards the farthest frontface will also bring us closer to the nearest frontface
-        float3 closestFrontfaceDirection = GetRayDirection(closestFrontfaceIndex, _RaysPerProbe, randomRotation);
-        float3 farthestFrontfaceDirection = GetRayDirection(farthestFrontfaceIndex, _RaysPerProbe, randomRotation);
+        float3 closestFrontfaceDirection  = DDGIGetProbeRayDirection(closestFrontfaceIndex);
+        float3 farthestFrontfaceDirection = DDGIGetProbeRayDirection(farthestFrontfaceIndex);
 
         if (dot(closestFrontfaceDirection, farthestFrontfaceDirection) <= 0.f)
         {

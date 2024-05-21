@@ -1,0 +1,256 @@
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+#include "Lib/DDGIInputs.hlsl"
+#include "Lib/DDGIProbeIndexing.hlsl"
+#include "Lib/DDGIFuncs.hlsl"
+
+// Reference:   https://www.cnblogs.com/OneStargazer/p/18122953
+//              https://zhuanlan.zhihu.com/p/469436345
+// 目前Unity没有提供查询当前平台Lane Count的API，按HDRP的定义方式，我们在非主机平台上应该回退到64 lane count
+// 对于NVIDIA的显卡来说，lane count是32；而AMD是64，目前尚不清楚HDRP为什么要回退到64
+
+// **但是**，我们这里需要用lane count来计算有多少组wave（NUM_WAVES），进而确定ThreadGroupSum的大小
+// ThreadGroupSum用于存储每一个wave的规约结果，最后由reduceSharedMemorySum函数将ThreadGroupSum二次求和来确定每个线程组的最终规约结果
+// 如果我们在这里将lane count回退到64，那么在NVIDIA显卡上，ThreadGroupSum的大小会不够用，并且还会导致数组越界，其行为不可控制
+// 具体来说，从variability average的回读结果来看，如果lane count = 64，在NVIDIA显卡上我们会得到NaN值
+// ---------------------------------------------------------------------------------------------------
+// 我们这里给到32，如果是AMD的显卡，那么waveIndex只有0和1，相当于ThreadGroupSum有两个空位，这样理论上MaxSumEntry最多就是1
+// 后续也不会访问到ThreadGroupSum的2和3号元素，应该不会有问题；但如果有的显卡（比如Intel）的lane count比32更少，可能还是跑不对
+#ifdef PLATFORM_LANE_COUNT                                  // Reference HDRP: We can infer the size of a wave. This is currently not possible on non-consoles, so we have to fallback to a sensible default in those cases.
+    #define RTXGI_DDGI_WAVE_LANE_COUNT  PLATFORM_LANE_COUNT
+#else
+    #define RTXGI_DDGI_WAVE_LANE_COUNT  32                  // HDRP在这里回退到64，然而根据上述推断，我们只能给到32
+#endif
+
+#define NUM_THREADS_X 4
+#define NUM_THREADS_Y 8
+#define NUM_THREADS_Z 4
+#define NUM_THREADS NUM_THREADS_X * NUM_THREADS_Y * NUM_THREADS_Z
+#define NUM_WAVES   NUM_THREADS / RTXGI_DDGI_WAVE_LANE_COUNT
+
+#pragma kernel DDGIReductionCS
+#pragma kernel DDGIExtraReductionCS
+
+// 添加这一行是为了让Wave操作函数（如WaveActiveSum）能够通过编译
+#pragma use_dxc
+
+RWTexture2DArray<float>  _ProbeVariability; 
+RWTexture2DArray<float2> _ProbeVariabilityAverage;
+
+groupshared float ThreadGroupSum[NUM_WAVES];
+groupshared uint  MaxSumEntry;
+groupshared uint  NumTotalSamples;
+
+// Sums values in the ThreadGroupSum shared memory array, from 0 to MaxSumEntry
+// At the end of the function, ThreadGroupSum[0] should have the total of the whole array
+void reduceSharedMemorySum(uint ThreadIndexInGroup, uint waveIndex, uint waveLaneCount)
+{
+    uint numSharedMemoryEntries = MaxSumEntry + 1;
+    uint activeThreads = numSharedMemoryEntries;
+    while (activeThreads > 1)
+    {
+        bool usefulThread = ThreadIndexInGroup < activeThreads;
+        if (usefulThread)
+        {
+            float value = ThreadGroupSum[ThreadIndexInGroup];
+            GroupMemoryBarrierWithGroupSync();
+
+            float warpTotalValue = WaveActiveSum(value);
+
+            if (WaveIsFirstLane())
+            {
+                ThreadGroupSum[waveIndex] = warpTotalValue;
+            }
+            GroupMemoryBarrierWithGroupSync();
+        }
+        // Divide by wave size, rounding up (ceil)
+        activeThreads = (activeThreads + waveLaneCount - 1) / waveLaneCount;
+    }
+}
+
+// Thread Group Counts:
+//  X - (probeCount.x * interiorIrradianceTexels) / (NUM_THREAD_X * ThreadSampleFootprint.x)
+//  Y - (probeCount.y * interiorIrradianceTexels) / (NUM_THREAD_Y * ThreadSampleFootprint.y)
+//  Z - (probeCount.z * interiorIrradianceTexels) / NUM_THREAD_Z
+// 即“在X方向上有NUM_THREAD_X个线程，每个线程有ThreadSampleFootprint.x个采样足迹的设置下，需要在X方向上分配多少个线程组，才能将irradiance texture的X轴规约完毕”
+[numthreads(NUM_THREADS_X, NUM_THREADS_Y, NUM_THREADS_Z)]
+void DDGIReductionCS(uint3 GroupID : SV_GroupID, uint3 GroupThreadID : SV_GroupThreadID, uint ThreadIndexInGroup : SV_GroupIndex)
+{
+    if (ThreadIndexInGroup == 0)
+    {
+        MaxSumEntry = 0;
+        NumTotalSamples = 0;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    // Doing 4x2 samples per thread
+    const uint3 ThreadSampleFootprint = uint3(4, 2, 1);
+
+    uint3 groupCoordOffset   = GroupID.xyz * uint3(NUM_THREADS_X, NUM_THREADS_Y, NUM_THREADS_Z) * ThreadSampleFootprint;
+    uint3 threadCoordInGroup = GroupThreadID.xyz;
+    uint3 threadCoordGlobal  = groupCoordOffset + threadCoordInGroup * ThreadSampleFootprint;
+
+    uint waveLaneCount       = WaveGetLaneCount();
+    uint wavesPerThreadGroup = NUM_THREADS / waveLaneCount;
+    uint waveIndex           = ThreadIndexInGroup / waveLaneCount;
+
+    uint3 probeVariabilitySize = _ReductionInputSize;
+
+    float sampleSum  = 0;
+    uint  numSamples = 0;
+    for (uint i = 0; i < ThreadSampleFootprint.x; i++)
+    {
+        for (uint j = 0; j < ThreadSampleFootprint.y; j++)
+        {
+            uint3 sampleCoord = threadCoordGlobal + uint3(i, j, 0);
+            // Iterating over non-border samples of the irradiance texture
+            // Calling GetProbeIndex with NUM_INTERIOR_TEXELS (instead of NUM_TEXELS) to make
+            // sample coordinates line up with probe indices and avoid sampling border texels
+            int  probeIndex     = DDGIGetProbeIndex(sampleCoord/*, RTXGI_DDGI_PROBE_NUM_INTERIOR_TEXELS, volume*/);
+            bool sampleInBounds = all(sampleCoord < probeVariabilitySize);
+            if (sampleInBounds)
+            {
+                float value = _ProbeVariability[sampleCoord].r;
+
+                /*// Skip inactive probes
+                if (volume.probeClassificationEnabled)
+                {
+                    uint3 probeDataCoords = DDGIGetProbeTexelCoords(probeIndex, volume);
+                    int  probeState = ProbeData[probeDataCoords].w;
+                    if (probeState == RTXGI_DDGI_PROBE_STATE_INACTIVE)
+                    {
+                        value = 0.f;
+                        continue;
+                    }
+                }*/
+
+                sampleSum += value;
+                numSamples++;
+            }
+        }
+    }
+
+    // Sum up the warp
+    float waveTotalValue    = WaveActiveSum(sampleSum);
+    // Sum up useful sample count
+    uint  usefulSampleCount = WaveActiveSum(numSamples);
+    // Write sum and sample count for this wave
+    if (WaveIsFirstLane())
+    {
+        ThreadGroupSum[waveIndex] = waveTotalValue;
+        InterlockedMax(MaxSumEntry, waveIndex);
+        InterlockedAdd(NumTotalSamples, usefulSampleCount);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    reduceSharedMemorySum(ThreadIndexInGroup, waveIndex, waveLaneCount);
+
+    if (ThreadIndexInGroup == 0)
+    {
+        float TotalPossibleSamples = NUM_THREADS * ThreadSampleFootprint.x * ThreadSampleFootprint.y;
+        // Average value for the samples we took
+        _ProbeVariabilityAverage[GroupID.xyz].r = NumTotalSamples > 0 ? ThreadGroupSum[0] / NumTotalSamples : 0;
+        // Normalizing "weight" factor for this thread group, to allow partial thread groups to average properly with full groups
+        _ProbeVariabilityAverage[GroupID.xyz].g = NumTotalSamples / TotalPossibleSamples;
+    }
+}
+
+groupshared float ThreadGroupAverage[NUM_WAVES];
+groupshared uint  MaxAverageEntry;
+groupshared float ThreadGroupWeight[NUM_WAVES];
+
+void reduceSharedMemoryAverage(uint ThreadIndexInGroup, uint waveIndex, uint waveLaneCount)
+{
+    uint numSharedMemoryEntries = MaxAverageEntry + 1;
+    uint activeThreads = numSharedMemoryEntries;
+    while (activeThreads > 1)
+    {
+        bool usefulThread = ThreadIndexInGroup < activeThreads;
+        if (usefulThread)
+        {
+            float value = ThreadGroupAverage[ThreadIndexInGroup];
+            float weight = ThreadGroupWeight[ThreadIndexInGroup];
+            GroupMemoryBarrierWithGroupSync();
+
+            float waveTotalValue = WaveActiveSum(weight*value);
+            float waveTotalWeight = WaveActiveSum(weight);
+            float TotalPossibleWeight = WaveActiveCountBits(true);
+
+            if (WaveIsFirstLane())
+            {
+                ThreadGroupAverage[waveIndex] = waveTotalValue / waveTotalWeight;
+                ThreadGroupWeight[waveIndex] = waveTotalWeight / TotalPossibleWeight;
+            }
+            GroupMemoryBarrierWithGroupSync();
+        }
+        activeThreads = (activeThreads + waveLaneCount - 1) / waveLaneCount;
+    }
+}
+
+[numthreads(NUM_THREADS_X, NUM_THREADS_Y, NUM_THREADS_Z)]
+void DDGIExtraReductionCS(uint3 GroupID : SV_GroupID, uint3 GroupThreadID : SV_GroupThreadID, uint ThreadIndexInGroup : SV_GroupIndex)
+{
+    if (ThreadIndexInGroup == 0)
+    {
+        MaxAverageEntry = 0;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    
+    uint waveLaneCount = WaveGetLaneCount();
+    uint wavesPerThreadGroup = NUM_THREADS / waveLaneCount;
+    uint waveIndex = ThreadIndexInGroup / waveLaneCount;
+
+    // Doing 4x2 samples per thread
+    const uint3 ThreadSampleFootprint = uint3(4, 2, 1);
+
+    uint3 groupCoordOffset = GroupID.xyz * uint3(NUM_THREADS_X, NUM_THREADS_Y, NUM_THREADS_Z) * ThreadSampleFootprint;
+    uint3 threadCoordInGroup = GroupThreadID.xyz;
+    uint3 threadCoordGlobal = groupCoordOffset + threadCoordInGroup * ThreadSampleFootprint;
+    uint3 inputSize = _ReductionInputSize;
+    
+    bool footprintInBounds = all(threadCoordGlobal < inputSize);
+    float threadFootprintValueSum = 0;
+    float threadFootprintWeightSum = 0;
+
+    if (footprintInBounds)
+    {
+        for (uint i = 0; i < ThreadSampleFootprint.x; i++)
+        {
+            for (uint j = 0; j < ThreadSampleFootprint.y; j++)
+            {
+                uint3 sampleCoord = threadCoordGlobal + uint3(i, j, 0);
+                bool sampleInBounds = all(sampleCoord < inputSize);
+                if (sampleInBounds)
+                {
+                    float value = _ProbeVariabilityAverage[sampleCoord].r;
+                    float weight = _ProbeVariabilityAverage[sampleCoord].g;
+                    threadFootprintValueSum += weight * value;
+                    threadFootprintWeightSum += weight;
+                }
+            }
+        }
+    }
+    float threadAverageValue = (footprintInBounds && threadFootprintWeightSum > 0) ? threadFootprintValueSum / threadFootprintWeightSum : 0;
+    // Per-thread weight will be 1.0 if thread sampled all 4x2 pixels, 0.125 if it only sampled one
+    float ThreadTotalPossibleWeight = ThreadSampleFootprint.x * ThreadSampleFootprint.y;
+    float threadWeight = threadFootprintWeightSum / ThreadTotalPossibleWeight;
+
+    // Sum up the warp
+    float waveTotalValue = WaveActiveSum(threadWeight * threadAverageValue);
+    float waveTotalWeight = WaveActiveSum(threadWeight);
+    float waveTotalPossibleWeight = waveLaneCount * ThreadTotalPossibleWeight;
+
+    if (WaveIsFirstLane() && WaveActiveAnyTrue(footprintInBounds))
+    {
+        ThreadGroupAverage[waveIndex] = waveTotalValue / waveTotalWeight;
+        ThreadGroupWeight[waveIndex] = waveTotalWeight / waveTotalPossibleWeight;
+        InterlockedMax(MaxSumEntry, waveIndex);
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+    reduceSharedMemoryAverage(ThreadIndexInGroup, waveIndex, waveLaneCount);
+    if (ThreadIndexInGroup == 0)
+    {
+        _ProbeVariabilityAverage[GroupID.xyz].r = ThreadGroupAverage[0];
+        _ProbeVariabilityAverage[GroupID.xyz].g = ThreadGroupWeight[0];
+    }
+}

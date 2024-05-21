@@ -112,6 +112,21 @@ MonoBehaviour:
   viewBiasMultiplier:
     m_OverrideState: 1
     m_Value: 0.3
+  enableProbeRelocation:
+    m_OverrideState: 1
+    m_Value: 1
+  probeMinFrontfaceDistance:
+    m_OverrideState: 1
+    m_Value: 0.3
+  probeFixedRayBackfaceThreshold:
+    m_OverrideState: 1
+    m_Value: 0.25
+  enableProbeVariability:
+    m_OverrideState: 1
+    m_Value: 0
+  probeVariabilityThreshold:
+    m_OverrideState: 1
+    m_Value: 0.025
   debugProbe:
     m_OverrideState: 1
     m_Value: 0
@@ -127,12 +142,6 @@ MonoBehaviour:
   indirectDebugMode:
     m_OverrideState: 1
     m_Value: 1
-  probeMinFrontfaceDistance:
-    m_OverrideState: 1
-    m_Value: 0.45
-  probeFixedRayBackfaceThreshold:
-    m_OverrideState: 1
-    m_Value: 0.3
   useCustomBounds:
     m_OverrideState: 1
     m_Value: 0

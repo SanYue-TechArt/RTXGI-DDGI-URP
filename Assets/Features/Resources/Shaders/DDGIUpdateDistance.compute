@@ -3,6 +3,7 @@
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
 #include "Lib/DDGIInputs.hlsl"
+#include "Lib/DDGIProbeIndexing.hlsl"
 #include "Lib/DDGIFuncs.hlsl"
 
 #define CACHE_SIZE PROBE_DISTANCE_TEXELS * PROBE_DISTANCE_TEXELS
@@ -35,64 +36,87 @@ void DDGIUpdateDistance (
     uint3 DispatchThreadId  : SV_DispatchThreadID,
     uint  GroupIndex        : SV_GroupIndex)
 {
-    uint  probeIdx              = GroupId.x;
-    uint3 probeGridCoords       = GetProbeGridCoordFromIndex(probeIdx);
-    uint2 texelLocation         = GetProbeTexelCoord(probeGridCoords, PROBE_DISTANCE_TEXELS);
-    uint2 cornerTexelLocation   = texelLocation - 1u;
-    texelLocation += GroupThreadId.xy;
+    // 注意这里我们使用的DDGIGetProbeIndex函数接受的输入是Probe的网格坐标，但我们的调度线程组是已经经过反转的，所以需要再次反转回来
+    uint  probeIndex          = DDGIGetProbeIndex(GroupId.xzy);
+    uint3 cornerTexelLocation = DDGIGetProbeBaseTexelCoords(probeIndex, PROBE_DISTANCE_TEXELS);
+    uint3 baseTexelLocation   = cornerTexelLocation + uint3(1, 1, 0);
+    uint3 texelLocation       = baseTexelLocation + uint3(GroupThreadId.xy, 0);
 
-    float2 prevDistance = _DistanceTextureHistory[texelLocation];
+    float2 prevDistance = _ProbeDistanceHistory[texelLocation];
 
-    float3   probeDirection = DecodeNormalOctahedron(((GroupThreadId.xy + 0.5f) / (float)PROBE_DISTANCE_TEXELS) * 2 - 1);
-    float3x3 randomRotation = AngleAxis3x3(_RandomAngle, _RandomVector);
-    
-    float  weightSum = 0;
-    float2 result = 0;
-    uint remainingRays = _RaysPerProbe;
-    uint offset = 0;
+    float3 probeDirection = DecodeNormalOctahedron(((GroupThreadId.xy + 0.5f) / (float)PROBE_DISTANCE_TEXELS) * 2 - 1);
+
+    // NVIDIA SDK的Shared Memory存储每一根光线的数据，但是实践中我们的光线数量允许重新调整
+    // 然而Shared Memory的大小必须是编译期确定的，如果应用程序调整光线预算，那么必须重新编译Shader，这不方便操作
+    // 由于漫反射的低频性质，Probe的Texel数量基本是不改的，因此我们将Shared Memory的大小设置为单个probe的texel总数（通常小于光线数量）
+    // Shared Memory读满后，马上进行卷积评估操作，然后再存下一批光线的数据
+    float   weightSum       = 0;
+    float2  result          = 0;
+    uint    remainingRays   = _RaysPerProbe;
+    uint    offset          = 0;
+
+    if((DDGI_PROBE_RELOCATION == DDGI_PROBE_RELOCATION_ON) || false)
+    {
+        remainingRays -= RTXGI_DDGI_NUM_FIXED_RAYS;
+        offset        += RTXGI_DDGI_NUM_FIXED_RAYS;
+    }
+
+    // ------------------------------
+    // Distance Evaluate
+    // ------------------------------
     while (remainingRays > 0)
     {
         uint numRays = min(CACHE_SIZE, remainingRays);
         if(GroupIndex < numRays)
         {
-            DepthCache[GroupIndex] = RayBuffer[probeIdx * _MaxRaysPerProbe + offset + GroupIndex].a;
-            DirectionCache[GroupIndex] = GetRayDirection(offset + GroupIndex, _RaysPerProbe, randomRotation);
+            DepthCache[GroupIndex] = RayBuffer[probeIndex * _MaxRaysPerProbe + offset + GroupIndex].a;
+            DirectionCache[GroupIndex] = DDGIGetProbeRayDirection(offset + GroupIndex);
         }
         GroupMemoryBarrierWithGroupSync();
 
         for(uint i = 0; i < numRays; ++i)
         {
             float depth = DepthCache[i];
-            depth = min(abs(depth), length(_ProbeSize) * 1.5f); // Reference: NVIDIA 
+            depth       = min(abs(depth), length(_ProbeSize) * 1.5f); // Reference: NVIDIA
+            
             float3 direction = DirectionCache[i];
+            
             float weight = saturate(dot(probeDirection, direction));
-            weight = pow(weight, 64);
-            if(weight > MIN_WEIGHT)
-            {
-                weightSum += weight;
-                result += float2(abs(depth), Pow2(depth)) * weight;
-            }
+            weight       = pow(weight, 64);
+            
+            weightSum   += weight;
+            result      += float2(abs(depth), Pow2(depth)) * weight;
         }
         remainingRays -= numRays;
         offset += numRays;
     }
 
-    if(weightSum > MIN_WEIGHT)
+    // ------------------------------
+    // Distance Post Processing
+    // ------------------------------
+    float epsilon = float(_RaysPerProbe);
+    if ((DDGI_PROBE_RELOCATION == DDGI_PROBE_RELOCATION_ON) || false)
     {
-        result /= weightSum;
+       epsilon -= RTXGI_DDGI_NUM_FIXED_RAYS; 
     }
+    epsilon *= 1e-9f;
+    result.rg *= 1.0f / (2.0f * max(weightSum, epsilon));
 
-    const float historyBlendWeight = saturate(1.0f - _HistoryBlendWeight);
-    result = lerp(prevDistance, result, historyBlendWeight);
+    const float currentBlendWeight = saturate(1.0f - _HistoryBlendWeight);
+    result = lerp(prevDistance, result, currentBlendWeight);
     
-    _DistanceTexture[texelLocation] = result;
+    _ProbeDistance[texelLocation] = result;
 
-    GroupMemoryBarrierWithGroupSync();
+    //GroupMemoryBarrierWithGroupSync();
+    AllMemoryBarrierWithGroupSync();
 
+    // ------------------------------
+    // Distance Border Update
+    // ------------------------------
     for (uint index = GroupIndex; index < BORDER_TEXELS; index += PROBE_DISTANCE_TEXELS * PROBE_DISTANCE_TEXELS)
     {
-        const uint2 sourceIndex = cornerTexelLocation + BORDER_OFFSETS[index].xy;
-        const uint2 targetIndex = cornerTexelLocation + BORDER_OFFSETS[index].zw;
-        _DistanceTexture[targetIndex] = _DistanceTexture[sourceIndex];
+        const uint3 sourceIndex = uint3(cornerTexelLocation + BORDER_OFFSETS[index].xy, cornerTexelLocation.z);
+        const uint3 targetIndex = uint3(cornerTexelLocation + BORDER_OFFSETS[index].zw, cornerTexelLocation.z);
+        _ProbeDistance[targetIndex] = _ProbeDistance[sourceIndex];
     }
 }

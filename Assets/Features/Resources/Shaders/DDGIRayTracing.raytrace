@@ -6,6 +6,7 @@
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
 #include "Lib/Common/RayTracingCommon.hlsl"
 #include "Lib/DDGIInputs.hlsl"
+#include "Lib/DDGIProbeIndexing.hlsl"
 #include "Lib/DDGIFuncs.hlsl"
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/UnityInput.hlsl"
 
@@ -15,16 +16,15 @@ void DDGI_RayGen()
     uint probeIdx   = DispatchRaysIndex().y;
     uint rayIdx     = DispatchRaysIndex().x;
     
-    float3 randomDirection = RotateAboutAxisInRadians(SphericalFibonacci(rayIdx, _RaysPerProbe), _RandomVector, _RandomAngle);
-    randomDirection = normalize(randomDirection);
+    float3 randomDirection = DDGIGetProbeRayDirection(rayIdx);
     
-    #if 0
-        float3 probeLocation = GetProbeLocation(probeIdx);
-    #else
-        // 根据下面的链接，光线跟踪Shader分支仍在计划中，所以我们目前无法动态开启Probe Relocation功能（其实写两个.raytrace shader，然后在Feature里动态切换也行，但是维护起来比较麻烦）
+    float3 probeLocation = 0.0f;
+    if (DDGI_PROBE_RELOCATION == DDGI_PROBE_RELOCATION_OFF)
+        probeLocation = DDGIGetProbeWorldPosition(probeIdx);
+    else
+        // 根据下面的链接，光线跟踪Shader分支仍在计划中，我们目前用变量判断开启与否
         // https://portal.productboard.com/unity/1-unity-platform-rendering-visual-effects/tabs/125-shader-system
-        float3 probeLocation = DDGIGetRelocatedProbeWorldPosition(probeIdx);
-    #endif
+        probeLocation = DDGIGetRelocatedProbeWorldPosition(probeIdx);
     
     RayDesc rayDesc;
     rayDesc.Origin      = probeLocation;

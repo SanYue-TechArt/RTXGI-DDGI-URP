@@ -76,51 +76,11 @@ Shader "Custom/LitRayTracing"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
             #include "Lib/DDGIInputs.hlsl"
+            #include "Lib/DDGIProbeIndexing.hlsl"
             #include "Lib/DDGIFuncs.hlsl"
 
             #include "Lib/LitRayTracingInput.hlsl"
             #include "Lib/LitRayTracingForwardPass.hlsl"
-
-            // Legacy, ignored
-            Varyings vert(Attributes vin)
-            {
-                Varyings vout = (Varyings)0;
-
-                vout.positionCS = TransformObjectToHClip(vin.positionOS);
-                vout.uv         = vin.texcoord;
-                vout.normalWS   = TransformObjectToWorldNormal(vin.normalOS);
-                vout.positionWS = TransformObjectToWorld(vin.positionOS);
-
-                return vout;
-            }
-            float4 frag(Varyings pin) : SV_Target
-            {
-                float3 radiance = 0.0f;
-                
-                float3 N = normalize(pin.normalWS);
-                float3 P = pin.positionWS;
-
-                Light  mainLight    = GetMainLight(TransformWorldToShadowCoord(P));
-                float3 diffuse      = saturate(dot(mainLight.direction, N)) * LambertNoPI() * _BaseColor;
-                radiance            = mainLight.color * mainLight.shadowAttenuation * diffuse;
-
-                for(int i = 0; i < GetAdditionalLightsCount(); ++i)
-                {
-                    Light  addLight     = GetAdditionalLight(i, P);
-                    float3 addDiffuse   = saturate(dot(addLight.direction, N)) * LambertNoPI() * _BaseColor;
-                    radiance            += addLight.color * addLight.shadowAttenuation * addLight.distanceAttenuation * addDiffuse;
-                }
-
-                float3 Wo               = GetWorldSpaceNormalizeViewDir(P);
-                float3 indirectLighting = LambertNoPI() * _BaseColor * SampleDDGIIrradiance(P, N, -Wo);
-                #ifdef DDGI_SHOW_INDIRECT_ONLY
-                    radiance            = indirectLighting;
-                #else
-                    radiance            += indirectLighting;
-                #endif
-
-                return float4(radiance, 1);
-            }
             
             ENDHLSL
         }
@@ -179,6 +139,7 @@ Shader "Custom/LitRayTracing"
 
             #include "Lib/Common/RayTracingCommon.hlsl"
             #include "Lib/DDGIInputs.hlsl"
+            #include "Lib/DDGIProbeIndexing.hlsl"
             #include "Lib/DDGIFuncs.hlsl"
 
             CBUFFER_START(UnityPerMaterial)

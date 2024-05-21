@@ -2,7 +2,7 @@ RWTexture2D<float4> _OutputTarget;
 
 #pragma max_recursion_depth 1
 
-#include "Lib/RayTracingCommon.hlsl"
+#include "Lib/Common/RayTracingCommon.hlsl"
 #include "Lib/LitRayTracingInput.hlsl"
 
 float _CameraFarDistance;
