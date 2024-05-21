@@ -19,7 +19,7 @@ This is more like a demostration, we have some limitations here.
 - Only DirectX12 API is supported on Windows
 
 - Only one probe volume supported, and you can`t rotate it
-- Probe Classification and Probe Variablity is not supported
+- Probe Classification is not supported
 - We use FindObjectsOfType to grab scene lights in each frame, it may be expensive
 - Transparent object is not tested at this version
 
