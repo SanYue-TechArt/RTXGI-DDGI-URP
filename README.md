@@ -31,4 +31,4 @@ This is more like a demostration, we have some limitations here.
 ## Reference
 
 - [NVIDIA-RTXGI-DDGI](https://github.com/NVIDIAGameWorks/RTXGI-DDGI?tab=readme-ov-file)
-- [Arida-DX12](https://github.com/mateeeeeee/Adria-DX12)
+- [Adria-DX12](https://github.com/mateeeeeee/Adria-DX12)
