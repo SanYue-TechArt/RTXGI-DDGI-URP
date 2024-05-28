@@ -23,6 +23,8 @@ This is more like a demostration, we have some limitations here.
 - We use FindObjectsOfType to grab scene lights in each frame, it may be expensive
 - Transparent object is not tested at this version
 
+- **Only Tested on NVIDIA Cards (NVIDIA Geforce 4070 Ti)**
+
 ## Third Party
 
 - [LWGUI](https://github.com/JasonMa0012/LWGUI)
