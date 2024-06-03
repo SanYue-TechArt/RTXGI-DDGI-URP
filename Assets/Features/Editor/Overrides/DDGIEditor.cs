@@ -13,6 +13,7 @@ public sealed class DDGIEditor : VolumeComponentEditor
     private SerializedDataParameter mIndirectIntensity;
     private SerializedDataParameter mNormalBiasMultiplier;
     private SerializedDataParameter mViewBiasMultiplier;
+    private SerializedDataParameter mProbeRotationDegrees;
     private SerializedDataParameter mDebugProbe;
     private SerializedDataParameter mProbeDebugMode;
     private SerializedDataParameter mProbeRadius;
@@ -20,6 +21,7 @@ public sealed class DDGIEditor : VolumeComponentEditor
     private SerializedDataParameter mIndirectDebugMode;
     private SerializedDataParameter mEnableProbeRelocation;
     private SerializedDataParameter mProbeMinFrontfaceDistance;
+    private SerializedDataParameter mEnableProbeClassification;
     private SerializedDataParameter mProbeFixedRayBackfaceThreshold;
     private SerializedDataParameter mEnableProbeVariability;
     private SerializedDataParameter mProbeVariabilityThreshold;
@@ -37,6 +39,7 @@ public sealed class DDGIEditor : VolumeComponentEditor
         mIndirectIntensity = Unpack(o.Find(x => x.indirectIntensity));
         mNormalBiasMultiplier = Unpack(o.Find(x => x.normalBiasMultiplier));
         mViewBiasMultiplier = Unpack(o.Find(x => x.viewBiasMultiplier));
+        mProbeRotationDegrees = Unpack(o.Find(x => x.probeRotationDegrees));
         mDebugProbe = Unpack(o.Find(x => x.debugProbe));
         mProbeDebugMode = Unpack(o.Find(x => x.probeDebugMode));
         mProbeRadius = Unpack(o.Find(x => x.probeRadius));
@@ -44,6 +47,7 @@ public sealed class DDGIEditor : VolumeComponentEditor
         mIndirectDebugMode = Unpack(o.Find(x => x.indirectDebugMode));
         mEnableProbeRelocation = Unpack(o.Find(x => x.enableProbeRelocation));
         mProbeMinFrontfaceDistance = Unpack(o.Find(x => x.probeMinFrontfaceDistance));
+        mEnableProbeClassification = Unpack(o.Find(x => x.enableProbeClassification));
         mProbeFixedRayBackfaceThreshold = Unpack(o.Find(x => x.probeFixedRayBackfaceThreshold));
         mEnableProbeVariability = Unpack(o.Find(x => x.enableProbeVariability));
         mProbeVariabilityThreshold = Unpack(o.Find(x => x.probeVariabilityThreshold));
@@ -69,26 +73,30 @@ public sealed class DDGIEditor : VolumeComponentEditor
         PropertyField(mIndirectIntensity);
         PropertyField(mNormalBiasMultiplier);
         PropertyField(mViewBiasMultiplier);
+        PropertyField(mProbeRotationDegrees);
         EditorGUILayout.Space(5.0f);
 
     #endregion
 
     
-    #region Relocation Settings
+    #region Probe Feature Settings
 
         PropertyField(mEnableProbeRelocation);
         if (mEnableProbeRelocation.value.boolValue)
         {
             PropertyField(mProbeMinFrontfaceDistance);
-            PropertyField(mProbeFixedRayBackfaceThreshold);
         }
-        EditorGUILayout.Space(5.0f);
-
-    #endregion
-
-
-    #region Variability Settings
-
+        EditorGUILayout.Space(3.0f);
+        
+        PropertyField(mEnableProbeClassification);
+        EditorGUILayout.Space(3.0f);
+        
+        if (mEnableProbeRelocation.value.boolValue || mEnableProbeClassification.value.boolValue)
+        {
+            PropertyField(mProbeFixedRayBackfaceThreshold);
+            EditorGUILayout.Space(3.0f);
+        }
+        
         PropertyField(mEnableProbeVariability);
         if (mEnableProbeVariability.value.boolValue)
         {
@@ -98,8 +106,8 @@ public sealed class DDGIEditor : VolumeComponentEditor
         EditorGUILayout.Space(5.0f);
 
     #endregion
+
     
-        
     #region Debug Options
 
         PropertyField(mDebugProbe);

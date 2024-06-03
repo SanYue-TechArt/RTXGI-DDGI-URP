@@ -78,7 +78,7 @@ Varyings LitPassVertex(Attributes input)
     return output;
 }
 
-void LitPassFragment(Varyings input, out half4 outColor : SV_Target0)
+float4 LitPassFragment(Varyings input) : SV_Target
 {
     UNITY_SETUP_INSTANCE_ID(input);
     UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
@@ -118,7 +118,7 @@ void LitPassFragment(Varyings input, out half4 outColor : SV_Target0)
         color.rgb           += indirectLighting;
     #endif
 
-    outColor = color;
+    return color;
 }
 
 #endif

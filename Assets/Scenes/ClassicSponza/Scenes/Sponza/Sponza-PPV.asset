@@ -112,12 +112,18 @@ MonoBehaviour:
   viewBiasMultiplier:
     m_OverrideState: 1
     m_Value: 0.3
+  probeRotationDegrees:
+    m_OverrideState: 1
+    m_Value: {x: 0, y: 0, z: 0}
   enableProbeRelocation:
     m_OverrideState: 1
     m_Value: 1
   probeMinFrontfaceDistance:
     m_OverrideState: 1
     m_Value: 0.3
+  enableProbeClassification:
+    m_OverrideState: 1
+    m_Value: 1
   probeFixedRayBackfaceThreshold:
     m_OverrideState: 1
     m_Value: 0.25
@@ -129,7 +135,7 @@ MonoBehaviour:
     m_Value: 0.025
   debugProbe:
     m_OverrideState: 1
-    m_Value: 0
+    m_Value: 1
   probeDebugMode:
     m_OverrideState: 1
     m_Value: 0
@@ -153,7 +159,7 @@ MonoBehaviour:
     m_Value: 22
   probeCountZ:
     m_OverrideState: 1
-    m_Value: 22
+    m_Value: 23
   raysPerProbe:
     m_OverrideState: 1
     m_Value: 144

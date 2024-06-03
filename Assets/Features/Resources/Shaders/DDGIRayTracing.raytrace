@@ -16,15 +16,14 @@ void DDGI_RayGen()
     uint probeIdx   = DispatchRaysIndex().y;
     uint rayIdx     = DispatchRaysIndex().x;
     
+    // 如果当前probe处于禁用状态，我们只需为其分配32条光线用于逐帧classification判定，而跳过多余的光线
+    const uint3 probeDataCoords = DDGIGetProbeTexelCoordsOneByOne(probeIdx);
+    const int   probeState      = DDGILoadProbeState(probeDataCoords);
+    if(probeState == DDGI_PROBE_STATE_INACTIVE && rayIdx >= RTXGI_DDGI_NUM_FIXED_RAYS) return;
+    
     float3 randomDirection = DDGIGetProbeRayDirection(rayIdx);
     
-    float3 probeLocation = 0.0f;
-    if (DDGI_PROBE_RELOCATION == DDGI_PROBE_RELOCATION_OFF)
-        probeLocation = DDGIGetProbeWorldPosition(probeIdx);
-    else
-        // 根据下面的链接，光线跟踪Shader分支仍在计划中，我们目前用变量判断开启与否
-        // https://portal.productboard.com/unity/1-unity-platform-rendering-visual-effects/tabs/125-shader-system
-        probeLocation = DDGIGetRelocatedProbeWorldPosition(probeIdx);
+    float3 probeLocation = DDGIGetProbeWorldPosition(probeIdx);
     
     RayDesc rayDesc;
     rayDesc.Origin      = probeLocation;
@@ -37,6 +36,7 @@ void DDGI_RayGen()
     payload.distance        = Max(_ProbeSize) * 1.5f;
     payload.isShadowPayload = false;
     payload.isInShadow      = false;
+    payload.rayIndex        = rayIdx;
     
     TraceRay(_AccelerationStructure, RAY_FLAG_NONE, 0xFF, 0, 0, 0, rayDesc, payload);
     

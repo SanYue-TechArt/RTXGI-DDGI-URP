@@ -112,17 +112,17 @@ void DDGIReductionCS(uint3 GroupID : SV_GroupID, uint3 GroupThreadID : SV_GroupT
             {
                 float value = _ProbeVariability[sampleCoord].r;
 
-                /*// Skip inactive probes
-                if (volume.probeClassificationEnabled)
+                // Skip inactive probes
+                if (DDGI_PROBE_CLASSIFICATION == DDGI_PROBE_CLASSIFICATION_ON)
                 {
-                    uint3 probeDataCoords = DDGIGetProbeTexelCoords(probeIndex, volume);
-                    int  probeState = ProbeData[probeDataCoords].w;
-                    if (probeState == RTXGI_DDGI_PROBE_STATE_INACTIVE)
+                    const uint3 probeDataCoords = DDGIGetProbeTexelCoordsOneByOne(probeIndex);
+                    const int   probeState      = DDGILoadProbeState(probeDataCoords);
+                    if (probeState == DDGI_PROBE_STATE_INACTIVE)
                     {
-                        value = 0.f;
+                        value = 0.0f;
                         continue;
                     }
-                }*/
+                }
 
                 sampleSum += value;
                 numSamples++;

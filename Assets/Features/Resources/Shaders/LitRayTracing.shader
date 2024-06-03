@@ -67,9 +67,9 @@ Shader "Custom/LitRayTracing"
             #pragma multi_compile_fragment _ _SHADOWS_SOFT _SHADOWS_SOFT_LOW _SHADOWS_SOFT_MEDIUM _SHADOWS_SOFT_HIGH
             #pragma multi_compile_fragment _ _SCREEN_SPACE_OCCLUSION
 
-            // DDGI Keywords.
-            #pragma multi_compile_fragment _ DDGI_SHOW_INDIRECT_ONLY
-            #pragma multi_compile_fragment _ DDGI_SHOW_PURE_INDIRECT_RADIANCE
+            // DDGI Debug Keywords.
+            #pragma multi_compile _ DDGI_SHOW_INDIRECT_ONLY
+            #pragma multi_compile _ DDGI_SHOW_PURE_INDIRECT_RADIANCE
 
             #define FORWARD_USE_DDGI 1
 
@@ -167,6 +167,21 @@ Shader "Custom/LitRayTracing"
                         payload.isInShadow = true;
                         return;
                     }
+
+                    // 如果撞击到了几何体背面，则我们无需评估光照，只需存储背面的distance信息即可
+                    if(HitKind() == HIT_KIND_TRIANGLE_BACK_FACE)
+                    {
+                        payload.distance = -0.2f * RayTCurrent();
+                        return;
+                    }
+
+                    // 如果启用relocation或classification，那么固定光线部分不会参与辐照度评估，因此我们也无需评估光照，只需存储正面的distance信息即可
+                    if((DDGI_PROBE_RELOCATION == DDGI_PROBE_RELOCATION_ON || DDGI_PROBE_CLASSIFICATION == DDGI_PROBE_CLASSIFICATION_ON)
+                        && payload.rayIndex < RTXGI_DDGI_NUM_FIXED_RAYS)
+                    {
+                        payload.distance = RayTCurrent();
+                        return;
+                    }
                     
                     float2 uv   = vertex.uv;
                     float3 N    = TransformObjectToWorldNormal(vertex.normalOS);
@@ -194,6 +209,7 @@ Shader "Custom/LitRayTracing"
                         shadowPayload.distance          = 0.0f; // We dont care this.
                         shadowPayload.isShadowPayload   = true;
                         shadowPayload.isInShadow        = false;
+                        shadowPayload.rayIndex          = 0u;   // We dont care this.
 
                         TraceRay(_AccelerationStructure, RAY_FLAG_NONE, 0xFF, 0, 1, 0, shadowRayDesc, shadowPayload);
 
@@ -221,6 +237,7 @@ Shader "Custom/LitRayTracing"
                         shadowPayload.distance          = 0.0f; // We dont care this.
                         shadowPayload.isShadowPayload   = true;
                         shadowPayload.isInShadow        = false;
+                        shadowPayload.rayIndex          = 0u;   // We dont care this.
 
                         TraceRay(_AccelerationStructure, RAY_FLAG_NONE, 0xFF, 0, 1, 0, shadowRayDesc, shadowPayload);
 
@@ -235,7 +252,7 @@ Shader "Custom/LitRayTracing"
                     radiance += LambertNoPI() * min(_BaseColor, 0.9f) * SampleDDGIIrradiance(P, N, WorldRayDirection()); // SampleDDGIIrradiance的结果相当于次生光源
                 }
                 payload.radiance = radiance;
-                payload.distance = (HitKind() == HIT_KIND_TRIANGLE_BACK_FACE) ? (-0.2f * RayTCurrent()) : RayTCurrent();
+                payload.distance = RayTCurrent();
             }
             
             ENDHLSL

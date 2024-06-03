@@ -1,0 +1,97 @@
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+#include "Lib/DDGIInputs.hlsl"
+#include "Lib/DDGIProbeIndexing.hlsl"
+#include "Lib/DDGIFuncs.hlsl"
+
+#pragma kernel DDGIProbeClassificationCS
+#pragma kernel DDGIProbeClassificationResetCS
+
+// 每一帧检测probe所关联的体素块内有没有几何体（利用probe在所有方向上的距离是否超过了体素块的大小，如果超过则证明其管辖的体素块内没有几何体）
+// 如果体素内没有任何几何体，则表明没有几何会用到这部分的辐照度数据，可以不用更新了，但如果检测到有效几何，我们需要在下一帧恢复更新
+[numthreads(32, 1, 1)]
+void DDGIProbeClassificationCS (uint3 DispatchThreadID : SV_DispatchThreadID)
+{
+    const uint probeIndex = DispatchThreadID.x;
+
+    const int numProbes = _ProbeCount.x * _ProbeCount.y * _ProbeCount.z;
+    if(probeIndex >= numProbes) return;
+
+    const int numRays = min(_RaysPerProbe, RTXGI_DDGI_NUM_FIXED_RAYS);
+
+    int   rayIndex;
+    int   backfaceCount = 0;
+
+    for(rayIndex = 0; rayIndex < RTXGI_DDGI_NUM_FIXED_RAYS; ++rayIndex)
+    {
+        backfaceCount += (RayBuffer[probeIndex * _MaxRaysPerProbe + rayIndex].a < 0.0f);
+    }
+
+    const uint3 outputCoords = DDGIGetProbeTexelCoordsOneByOne(probeIndex);
+
+    // 如果该probe很可能卡墙时（命中背面的比例比较高时），我们可以不更新它
+    if(((float)backfaceCount / (float)RTXGI_DDGI_NUM_FIXED_RAYS) > _ProbeFixedRayBackfaceThreshold)
+    {
+        float4 rawData           = _ProbeData[outputCoords];
+        _ProbeData[outputCoords] = float4(rawData.xyz, DDGI_PROBE_STATE_INACTIVE);
+        return;
+    }
+
+    const float3 probeWorldPosition = DDGIGetProbeWorldPosition(probeIndex);
+
+    for(rayIndex = 0; rayIndex < RTXGI_DDGI_NUM_FIXED_RAYS; ++rayIndex)
+    {
+        const float hitDistance = RayBuffer[probeIndex * _MaxRaysPerProbe + rayIndex].a;
+        if(hitDistance < 0.0f) continue;
+
+        float3 direction = DDGIGetProbeRayDirection(rayIndex);
+
+        // 获得离光线方向最近的三个plane的法线
+        float3 xNormal = float3(direction.x / max(abs(direction.x), 0.000001f), 0.f, 0.f);
+        float3 yNormal = float3(0.f, direction.y / max(abs(direction.y), 0.000001f), 0.f);
+        float3 zNormal = float3(0.f, 0.f, direction.z / max(abs(direction.z), 0.000001f));
+
+        // 获得plane的具体位置
+        float3 p0x = probeWorldPosition + (_ProbeSize.x * xNormal);
+        float3 p0y = probeWorldPosition + (_ProbeSize.y * yNormal);
+        float3 p0z = probeWorldPosition + (_ProbeSize.z * zNormal);
+
+        // 获得光线到每一个plane的距离
+        float3 distances = 
+        {
+            dot((p0x - probeWorldPosition), xNormal) / max(dot(direction, xNormal), 0.000001f),
+            dot((p0y - probeWorldPosition), yNormal) / max(dot(direction, yNormal), 0.000001f),
+            dot((p0z - probeWorldPosition), zNormal) / max(dot(direction, zNormal), 0.000001f)
+        };
+        
+        // 如果光线和某一个plane平行，那么光线将永远不会和其相交，则我们分配一个极大值
+        if (distances.x == 0.f) distances.x = 1e27f;
+        if (distances.y == 0.f) distances.y = 1e27f;
+        if (distances.z == 0.f) distances.z = 1e27f;
+
+        // 获得离光线最近的plane与光线的距离
+        float maxDistance = min(distances.x, min(distances.y, distances.z));
+
+        // 如果最近光线交点小于到体素plane的距离，则表明该ray所管辖的体素块内有物体，我们需要恢复probe的更新
+        if(hitDistance <= maxDistance)
+        {
+            float4 rawData           = _ProbeData[outputCoords];
+            _ProbeData[outputCoords] = float4(rawData.xyz, DDGI_PROBE_STATE_ACTIVE);
+            return;
+        }
+    }
+
+    // 如果没探测到有效几何，则不需要更新 
+    float4 rawData           = _ProbeData[outputCoords];
+    _ProbeData[outputCoords] = float4(rawData.xyz,DDGI_PROBE_STATE_INACTIVE);
+}
+
+[numthreads(32, 1, 1)]
+void DDGIProbeClassificationResetCS(uint3 DispatchThreadID : SV_DispatchThreadID)
+{
+    const uint  probeIndex   = DispatchThreadID.x;
+    const uint3 outputCoords = DDGIGetProbeTexelCoordsOneByOne(probeIndex);
+
+    float4 rawData           = _ProbeData[outputCoords];
+    _ProbeData[outputCoords] = float4(rawData.xyz, DDGI_PROBE_STATE_ACTIVE);
+}

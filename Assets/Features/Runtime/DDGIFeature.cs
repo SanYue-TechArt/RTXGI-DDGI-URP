@@ -17,11 +17,13 @@ public sealed class DDGIFeature : ScriptableRendererFeature
         //              Members and Defines
         // ----------------------------------------------------
         private DDGI mddgiOverride;
+        private DDGICustomBounds mCustomGIVolume;
         
         private bool mIsInitialized = false;
 
-        private bool mNeedToReset = true;
+        private bool mNeedToResetProbeHistory = true;
         private bool mNeedToResetProbeRelocation = true;
+        private bool mNeedToResetProbeClassification = true;
 
         private static readonly int PROBE_NUM_IRRADIANCE_INTERIOR_TEXELS = 6;
         private static readonly int PROBE_NUM_IRRADIANCE_TEXELS = PROBE_NUM_IRRADIANCE_INTERIOR_TEXELS + 2; // Including 1 texel for up border and 1 texel for down border;
@@ -49,6 +51,9 @@ public sealed class DDGIFeature : ScriptableRendererFeature
         private readonly int mUpdateIrradianceKernel;
         private readonly ComputeShader mUpdateDistanceCS;
         private readonly int mUpdateDistanceKernel;
+        private readonly ComputeShader mProbeClassificationCS;
+        private readonly int mResetClassificationKernel;
+        private readonly int mProbeClassificationKernel;
         private readonly ComputeShader mRelocateProbeCS;
         private readonly int mResetRelocationKernel;
         private readonly int mRelocateProbeKernel;
@@ -211,6 +216,7 @@ public sealed class DDGIFeature : ScriptableRendererFeature
             
             public static readonly int DDGIVolumeGpu = Shader.PropertyToID("DDGIVolumeGpu"); 
             public static readonly int _StartPosition = Shader.PropertyToID("_StartPosition"); 
+            public static readonly int _ProbeRotation = Shader.PropertyToID("_ProbeRotation"); 
             public static readonly int _RaysPerProbe = Shader.PropertyToID("_RaysPerProbe"); 
             public static readonly int _ProbeSize = Shader.PropertyToID("_ProbeSize"); 
             public static readonly int _MaxRaysPerProbe = Shader.PropertyToID("_MaxRaysPerProbe"); 
@@ -251,6 +257,9 @@ public sealed class DDGIFeature : ScriptableRendererFeature
             public static readonly int _ProbeData = Shader.PropertyToID("_ProbeData");
             public static readonly int _ProbeFixedRayBackfaceThreshold = Shader.PropertyToID("_ProbeFixedRayBackfaceThreshold");
             public static readonly int _ProbeMinFrontfaceDistance = Shader.PropertyToID("_ProbeMinFrontfaceDistance");
+            
+            // For Probe Classification
+            public static readonly int DDGI_PROBE_CLASSIFICATION = Shader.PropertyToID("DDGI_PROBE_CLASSIFICATION");
 
             // For Probe Debug
             public static readonly string DDGI_SHOW_INDIRECT_ONLY = "DDGI_SHOW_INDIRECT_ONLY";
@@ -276,6 +285,9 @@ public sealed class DDGIFeature : ScriptableRendererFeature
             mUpdateIrradianceKernel = mUpdateIrradianceCS.FindKernel("DDGIUpdateIrradiance");
             mUpdateDistanceCS = Resources.Load<ComputeShader>("Shaders/DDGIUpdateDistance");
             mUpdateDistanceKernel = mUpdateDistanceCS.FindKernel("DDGIUpdateDistance");
+            mProbeClassificationCS = Resources.Load<ComputeShader>("Shaders/DDGIProbeClassification");
+            mResetClassificationKernel = mProbeClassificationCS.FindKernel("DDGIProbeClassificationResetCS");
+            mProbeClassificationKernel = mProbeClassificationCS.FindKernel("DDGIProbeClassificationCS");
             mRelocateProbeCS = Resources.Load<ComputeShader>("Shaders/DDGIRelocateProbe");
             mResetRelocationKernel = mRelocateProbeCS.FindKernel("DDGIResetRelocation");
             mRelocateProbeKernel = mRelocateProbeCS.FindKernel("DDGIRelocateProbe");
@@ -306,7 +318,7 @@ public sealed class DDGIFeature : ScriptableRendererFeature
             mDDGIVolumeCpu.NumProbes = new Vector3Int(mddgiOverride.probeCountX.value, mddgiOverride.probeCountY.value, mddgiOverride.probeCountZ.value);
             mDDGIVolumeCpu.NumRays = mddgiOverride.raysPerProbe.value;
             mDDGIVolumeCpu.MaxNumRays = 512;
-            
+
             // ---------------------------------------
             // Initialize Ray Data Buffer
             // ---------------------------------------
@@ -407,8 +419,9 @@ public sealed class DDGIFeature : ScriptableRendererFeature
         public void Reinitialize()
         {
             mIsInitialized = false;
-            mNeedToReset = true;
+            mNeedToResetProbeHistory = true;
             mNeedToResetProbeRelocation = true;
+            mNeedToResetProbeClassification = true;
             mClearProbeVariability = true;
             mIsConverged = false;
         }
@@ -517,6 +530,36 @@ public sealed class DDGIFeature : ScriptableRendererFeature
                     mNeedToResetProbeRelocation = true;
                 }
             }
+
+            if (mddgiOverride.enableProbeClassification.value)
+            {
+                using (new ProfilingScope(cmd, new ProfilingSampler("DDGI Classify Probe Pass")))
+                {
+                    var numGroupsX = Mathf.CeilToInt(numProbesFlat / 32.0f /*relocationGroupSizeX*/);
+
+                    if (mNeedToResetProbeClassification)
+                    {
+                        cmd.SetComputeTextureParam(mProbeClassificationCS, mResetClassificationKernel, GpuParams._ProbeData, mProbeDataId);
+                        cmd.DispatchCompute(mProbeClassificationCS, mResetClassificationKernel, numGroupsX, 1, 1);
+                        mNeedToResetProbeClassification = false;
+                    }
+                    
+                    cmd.SetComputeTextureParam(mProbeClassificationCS, mProbeClassificationKernel, GpuParams._ProbeData, mProbeDataId);
+                    cmd.SetComputeBufferParam(mProbeClassificationCS, mProbeClassificationKernel, GpuParams.RayBuffer, mRayBuffer);
+                    cmd.DispatchCompute(mProbeClassificationCS, mProbeClassificationKernel, numGroupsX, 1, 1);
+                }
+            }
+            else
+            {
+                if (!mNeedToResetProbeClassification)
+                {
+                    var numGroupsX = Mathf.CeilToInt(numProbesFlat / 32.0f /*relocationGroupSizeX*/);
+                    
+                    cmd.SetComputeTextureParam(mProbeClassificationCS, mResetClassificationKernel, GpuParams._ProbeData, mProbeDataId);
+                    cmd.DispatchCompute(mProbeClassificationCS, mResetClassificationKernel, numGroupsX, 1, 1);
+                    mNeedToResetProbeClassification = true;
+                }
+            }
             
             if (mddgiOverride.enableProbeVariability.value)
             {
@@ -613,11 +656,11 @@ public sealed class DDGIFeature : ScriptableRendererFeature
 
         private void ResetHistoryInfoIfNeeded(CommandBuffer cmd)
         {
-            if (mNeedToReset)
+            if (mNeedToResetProbeHistory)
             {
                 CoreUtils.SetRenderTarget(cmd, mProbeIrradianceHistoryId, ClearFlag.Color, new Color(0,0,0,0));
                 CoreUtils.SetRenderTarget(cmd, mProbeDistanceHistoryId, ClearFlag.Color, new Color(0,0,0,0));
-                mNeedToReset = false;
+                mNeedToResetProbeHistory = false;
             }
         }
         
@@ -629,6 +672,18 @@ public sealed class DDGIFeature : ScriptableRendererFeature
             
             cmd.SetGlobalVector(GpuParams._RandomVector, randomVec);
             cmd.SetGlobalFloat(GpuParams._RandomAngle, randomAngle);
+            
+            // Compute Probe Volume Rotation.
+            Quaternion rotation;
+            if (mddgiOverride.useCustomBounds.value && mCustomGIVolume != null)
+            {
+                rotation = mCustomGIVolume.transform.rotation;
+            }
+            else
+            {
+                rotation = Quaternion.Euler(mddgiOverride.probeRotationDegrees.value);
+            }
+            cmd.SetGlobalVector(GpuParams._ProbeRotation, new Vector4(rotation.x, rotation.y, rotation.z, rotation.w));
             
             cmd.SetGlobalVector(GpuParams._StartPosition, mDDGIVolumeCpu.Origin - mDDGIVolumeCpu.Extents);
             var a = 2.0f * mDDGIVolumeCpu.Extents;
@@ -649,7 +704,7 @@ public sealed class DDGIFeature : ScriptableRendererFeature
             
             cmd.SetGlobalFloat(GpuParams._ProbeFixedRayBackfaceThreshold, mddgiOverride.probeFixedRayBackfaceThreshold.value);
             cmd.SetGlobalFloat(GpuParams._ProbeMinFrontfaceDistance, mddgiOverride.probeMinFrontfaceDistance.value);
-
+            
             cmd.DisableShaderKeyword(GpuParams.DDGI_SHOW_INDIRECT_ONLY);
             cmd.DisableShaderKeyword(GpuParams.DDGI_SHOW_PURE_INDIRECT_RADIANCE);
             if (mddgiOverride.debugIndirect.value)
@@ -662,11 +717,14 @@ public sealed class DDGIFeature : ScriptableRendererFeature
                     case IndirectDebugMode.PureIndirectRadiance:
                         cmd.EnableShaderKeyword(GpuParams.DDGI_SHOW_PURE_INDIRECT_RADIANCE);
                         break;
+                    default:
+                        break;
                 }
             }
             
             cmd.SetGlobalInt(GpuParams.DDGI_PROBE_RELOCATION, mddgiOverride.enableProbeRelocation.value ? 1 : 0);
             cmd.SetGlobalInt(GpuParams.DDGI_PROBE_REDUCTION, mddgiOverride.enableProbeVariability.value ? 1 : 0);
+            cmd.SetGlobalInt(GpuParams.DDGI_PROBE_CLASSIFICATION, mddgiOverride.enableProbeClassification.value ? 1 : 0);
         }
 
         #region [Light Update]
@@ -917,8 +975,8 @@ public sealed class DDGIFeature : ScriptableRendererFeature
             if (mddgiOverride != null && mddgiOverride.useCustomBounds.value)
             {
                 // 目前只支持单个自定义包围盒
-                var ddgiCustomBounds = FindFirstObjectByType<DDGICustomBounds>();
-                var boxCollider = ddgiCustomBounds.GetComponent<BoxCollider>();
+                mCustomGIVolume = FindFirstObjectByType<DDGICustomBounds>();
+                var boxCollider = mCustomGIVolume.GetComponent<BoxCollider>();
                 if (boxCollider != null) bounds = boxCollider.bounds;
             }
             else
@@ -1020,7 +1078,7 @@ public sealed class DDGIFeature : ScriptableRendererFeature
             public static readonly string DDGI_DEBUG_IRRADIANCE = "DDGI_DEBUG_IRRADIANCE";
             public static readonly string DDGI_DEBUG_DISTANCE = "DDGI_DEBUG_DISTANCE";
             public static readonly string DDGI_DEBUG_OFFSET = "DDGI_DEBUG_OFFSET";
-            
+
             public static readonly int _ProbeData = Shader.PropertyToID("_ProbeData");
             public static readonly int _ddgiSphere_ObjectToWorld = Shader.PropertyToID("_ddgiSphere_ObjectToWorld");
         }
@@ -1066,7 +1124,7 @@ public sealed class DDGIFeature : ScriptableRendererFeature
                 cmd.DisableShaderKeyword(GpuParams.DDGI_DEBUG_IRRADIANCE);
                 cmd.DisableShaderKeyword(GpuParams.DDGI_DEBUG_DISTANCE);
                 cmd.DisableShaderKeyword(GpuParams.DDGI_DEBUG_OFFSET);
-                
+
                 if (ddgiOverride.debugProbe.value)
                 {
                     switch (ddgiOverride.probeDebugMode.value)

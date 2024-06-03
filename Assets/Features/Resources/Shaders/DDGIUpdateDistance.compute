@@ -1,4 +1,5 @@
 #pragma kernel DDGIUpdateDistance
+#pragma use_dxc
 
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
@@ -41,6 +42,12 @@ void DDGIUpdateDistance (
     uint3 cornerTexelLocation = DDGIGetProbeBaseTexelCoords(probeIndex, PROBE_DISTANCE_TEXELS);
     uint3 baseTexelLocation   = cornerTexelLocation + uint3(1, 1, 0);
     uint3 texelLocation       = baseTexelLocation + uint3(GroupThreadId.xy, 0);
+ 
+    // 如果probe未启用，则跳过它的更新阶段
+    // 注：Unity默认的ShaderLab不支持在cs的if语句块中使用varying data，这里我们使用dxc进行编译
+    const uint3 probeDataCoords = DDGIGetProbeTexelCoordsOneByOne(probeIndex);
+    const int   probeState      = DDGILoadProbeState(probeDataCoords);
+    if(probeState == DDGI_PROBE_STATE_INACTIVE) return;
 
     float2 prevDistance = _ProbeDistanceHistory[texelLocation];
 
@@ -55,7 +62,7 @@ void DDGIUpdateDistance (
     uint    remainingRays   = _RaysPerProbe;
     uint    offset          = 0;
 
-    if((DDGI_PROBE_RELOCATION == DDGI_PROBE_RELOCATION_ON) || false)
+    if((DDGI_PROBE_RELOCATION == DDGI_PROBE_RELOCATION_ON) || (DDGI_PROBE_CLASSIFICATION == DDGI_PROBE_CLASSIFICATION_ON))
     {
         remainingRays -= RTXGI_DDGI_NUM_FIXED_RAYS;
         offset        += RTXGI_DDGI_NUM_FIXED_RAYS;
@@ -95,19 +102,21 @@ void DDGIUpdateDistance (
     // Distance Post Processing
     // ------------------------------
     float epsilon = float(_RaysPerProbe);
-    if ((DDGI_PROBE_RELOCATION == DDGI_PROBE_RELOCATION_ON) || false)
+    if ((DDGI_PROBE_RELOCATION == DDGI_PROBE_RELOCATION_ON) || (DDGI_PROBE_CLASSIFICATION == DDGI_PROBE_CLASSIFICATION_ON))
     {
        epsilon -= RTXGI_DDGI_NUM_FIXED_RAYS; 
     }
     epsilon *= 1e-9f;
+    
     result.rg *= 1.0f / (2.0f * max(weightSum, epsilon));
 
-    const float currentBlendWeight = saturate(1.0f - _HistoryBlendWeight);
+    float currentBlendWeight = saturate(1.0f - _HistoryBlendWeight);
+    if(dot(prevDistance, prevDistance) == 0) currentBlendWeight = 1.0f;
+    
     result = lerp(prevDistance, result, currentBlendWeight);
     
     _ProbeDistance[texelLocation] = result;
-
-    //GroupMemoryBarrierWithGroupSync();
+    
     AllMemoryBarrierWithGroupSync();
 
     // ------------------------------

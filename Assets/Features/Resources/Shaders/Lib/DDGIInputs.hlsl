@@ -11,6 +11,11 @@
 #define DDGI_SKYLIGHT_MODE_COLOR			2
 #define DDGI_SKYLIGHT_MODE_UNSUPPORTED		3
 
+#define DDGI_PROBE_CLASSIFICATION_ON  1
+#define DDGI_PROBE_CLASSIFICATION_OFF 0
+#define DDGI_PROBE_STATE_ACTIVE		  0
+#define DDGI_PROBE_STATE_INACTIVE	  1
+
 #define DDGI_PROBE_RELOCATION_ON	1
 #define DDGI_PROBE_RELOCATION_OFF	0
 
@@ -58,12 +63,16 @@ struct DDGIPayload
 	// For recursive shadow ray tracing.
 	bool isShadowPayload;
 	bool isInShadow;
+
+	// For ClosestHit Early Out.
+	uint rayIndex;
 };
 
 // --------------------------
 // Core Lighting Settings
 // --------------------------
 float3   _StartPosition;
+float4   _ProbeRotation;
 int      _RaysPerProbe;
 float3   _ProbeSize;
 int      _MaxRaysPerProbe;
@@ -81,7 +90,12 @@ float _ViewBiasMultiplier;
 //float _AxialDistanceMultiplier;
 
 // --------------------------
-// Probe Relocation Settings
+// Probe Classification
+// --------------------------
+int DDGI_PROBE_CLASSIFICATION;
+
+// --------------------------
+// Probe Relocation
 // --------------------------
 int	  DDGI_PROBE_RELOCATION;
 float _ProbeFixedRayBackfaceThreshold;
@@ -111,7 +125,7 @@ float4	_GroundColor;
 float4	_AmbientColor;
 
 // --------------------------
-// Probe Reduction Settings
+// Probe Reduction
 // --------------------------
 uint3 _ReductionInputSize;
 int	  DDGI_PROBE_REDUCTION;

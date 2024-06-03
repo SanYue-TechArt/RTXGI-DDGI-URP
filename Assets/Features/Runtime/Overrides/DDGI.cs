@@ -2,6 +2,7 @@ using System;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
+using UnityEngine.Serialization;
 
 public enum ProbeDebugMode
 {
@@ -31,29 +32,30 @@ public class DDGI : VolumeComponent, IPostProcessComponent
     public ClampedFloatParameter normalBiasMultiplier = new ClampedFloatParameter(0.2f, 0.0f, 1.0f);
     
     public ClampedFloatParameter viewBiasMultiplier = new ClampedFloatParameter(0.8f, 0.0f, 1.0f);
-    
+
+    public Vector3Parameter probeRotationDegrees = new Vector3Parameter(Vector3.zero);
+
     //public ClampedFloatParameter biasMultiplier = new ClampedFloatParameter(0.25f, 0.0f, 1.0f);
     //public ClampedFloatParameter axialDistanceMultiplier = new ClampedFloatParameter(0.75f, 0.0f, 1.0f);
 
 #endregion
 
 
-#region Relocation Settings
+#region Probe Feature Settings
 
-    [Header("Relocation Settings")]
+    [Header("Probe Feature Settings")]
+    [Tooltip("对Probe的位置进行实时重新分配，避免Probe卡进几何体内部")]
     public BoolParameter enableProbeRelocation = new BoolParameter(true);
         
     public ClampedFloatParameter probeMinFrontfaceDistance = new ClampedFloatParameter(0.3f, 0.0f, 2.0f);
-            
-    [Tooltip("当Probe中命中背面的光线比例超过该数值时，将对Probe进行偏移处理（由于Relocation过程不可逆，调高该数值时需要刷新DDGI设置）")]
+    
+    [Tooltip("禁用体素块内不存在有效几何体的Probe，让其只发射少量的固定光线以节省性能")]
+    public BoolParameter enableProbeClassification = new BoolParameter(true);
+    
+    [Tooltip("该参数同时用于Relocation以及Classification。用于Relocation时，当Probe中命中背面的光线比例超过该数值时，将对Probe进行偏移处理；用于Classification时，当超过比例时，我们将强制更新该Probe")]
     public ClampedFloatParameter probeFixedRayBackfaceThreshold = new ClampedFloatParameter(0.25f, 0.0f, 1.0f);
-
-#endregion
-
-
-#region Probe Variability Settings
-
-    [Header("Probe Variability Settings (Experimental)")]
+    
+    // ! Experimental Feature !
     [Tooltip("开启后，系统将分析GI结果的变异性 (Variability)，如果变异性较低，则表明积分结果收敛，我们将停止更新Probe Texture，避免间接光闪烁，同时节省开销【注：该特性不支持自发光物体！】")]
     public BoolParameter enableProbeVariability = new BoolParameter(false);
 
