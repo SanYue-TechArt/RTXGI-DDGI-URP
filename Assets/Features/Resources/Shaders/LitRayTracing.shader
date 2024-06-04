@@ -148,6 +148,7 @@ Shader "Custom/LitRayTracing"
                 float  _BumpScale;
             CBUFFER_END
 
+            TEXTURE2D(_BaseMap); SAMPLER(sampler_BaseMap);
             TEXTURE2D(_BumpMap); SAMPLER(sampler_BumpMap);
 
             [shader("closesthit")]
@@ -193,6 +194,8 @@ Shader "Custom/LitRayTracing"
                     N = UnpackNormalScale(SAMPLE_TEXTURE2D_LOD(_BumpMap, sampler_BumpMap, uv, 0), _BumpScale);
                     N = TransformTangentToWorldDir(N, tangentToWorld, true);
 
+                    float3 albedo = SAMPLE_TEXTURE2D_LOD(_BaseMap, sampler_BaseMap, uv, 0).rgb * _BaseColor.rgb;
+
                     for(int i = 0; i < _DirectionalLightCount; ++i)
                     {
                         Light dir_light = GetDDGIDirectionalLight(i);
@@ -216,7 +219,7 @@ Shader "Custom/LitRayTracing"
                         if(shadowPayload.isInShadow) dir_light.shadowAttenuation = 0.0f;
                         
                         // Accumulate Radiance.
-                        radiance += dir_light.color * dir_light.shadowAttenuation * saturate(dot(dir_light.direction, N)) * LambertNoPI() * _BaseColor;
+                        radiance += dir_light.color * dir_light.shadowAttenuation * saturate(dot(dir_light.direction, N)) * Lambert() * albedo;
                     }
 
                     for(int j = 0; j < _PunctualLightCount; ++j)
@@ -245,11 +248,11 @@ Shader "Custom/LitRayTracing"
 
                         // Accumulate Radiance.
                         radiance += punctual_light.color * punctual_light.shadowAttenuation * punctual_light.distanceAttenuation *
-                            saturate(dot(punctual_light.direction, N)) * LambertNoPI() * _BaseColor;
+                            saturate(dot(punctual_light.direction, N)) * Lambert() * albedo;
                     }
 
                     radiance += _EmissionColor;
-                    radiance += LambertNoPI() * min(_BaseColor, 0.9f) * SampleDDGIIrradiance(P, N, WorldRayDirection()); // SampleDDGIIrradiance的结果相当于次生光源
+                    radiance += (min(albedo, float3(0.9f, 0.9f, 0.9f)) * Lambert()) * SampleDDGIIrradiance(P, N, WorldRayDirection()); // SampleDDGIIrradiance的结果相当于次生光源
                 }
                 payload.radiance = radiance;
                 payload.distance = RayTCurrent();

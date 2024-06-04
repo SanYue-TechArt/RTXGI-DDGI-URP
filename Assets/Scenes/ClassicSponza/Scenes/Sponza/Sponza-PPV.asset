@@ -105,7 +105,7 @@ MonoBehaviour:
     m_Value: 1
   indirectIntensity:
     m_OverrideState: 1
-    m_Value: 2.3
+    m_Value: 3
   normalBiasMultiplier:
     m_OverrideState: 1
     m_Value: 0.1
@@ -135,7 +135,7 @@ MonoBehaviour:
     m_Value: 0.025
   debugProbe:
     m_OverrideState: 1
-    m_Value: 1
+    m_Value: 0
   probeDebugMode:
     m_OverrideState: 1
     m_Value: 0
@@ -162,7 +162,7 @@ MonoBehaviour:
     m_Value: 23
   raysPerProbe:
     m_OverrideState: 1
-    m_Value: 144
+    m_Value: 256
 --- !u!114 &-840262880208484689
 MonoBehaviour:
   m_ObjectHideFlags: 3

@@ -1,6 +1,8 @@
 #ifndef DDGI_INPUTS
 #define DDGI_INPUTS
 
+#define DDGI_2PI 6.2831853071795864f;  
+
 #define PROBE_IRRADIANCE_TEXELS     6		// Texel Number in each direction (without border)
 #define PROBE_DISTANCE_TEXELS       14		// Texel Number in each direction (without border)
 #define BACKFACE_DEPTH_MULTIPLIER   -0.2f

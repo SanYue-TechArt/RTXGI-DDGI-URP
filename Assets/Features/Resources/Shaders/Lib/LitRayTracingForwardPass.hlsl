@@ -109,7 +109,7 @@ float4 LitPassFragment(Varyings input) : SV_Target
 
     // Indirect Lighting Evaluate.
     float3 indirectRadiance = SampleDDGIIrradiance(inputData.positionWS, inputData.normalWS, -inputData.viewDirectionWS);
-    float3 indirectLighting = surfaceData.albedo * indirectRadiance * aoFactor.indirectAmbientOcclusion;
+    float3 indirectLighting = surfaceData.albedo * Lambert() * indirectRadiance * aoFactor.indirectAmbientOcclusion;
     #ifdef DDGI_SHOW_INDIRECT_ONLY
         color.rgb           = indirectLighting;
     #elif DDGI_SHOW_PURE_INDIRECT_RADIANCE

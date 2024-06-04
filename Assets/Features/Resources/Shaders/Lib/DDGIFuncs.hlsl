@@ -405,8 +405,7 @@ float3 SampleDDGIIrradiance(float3 P, float3 N, float3 Wo)
 
 	sumIrradiance *= (1.0f / sumWeight);
 	sumIrradiance *= sumIrradiance;
-	// 我们在外面使用的DiffuseBRDF没有除PI（LambertNoPI），所以这里不需要再乘
-	//sumIrradiance *= PI;
+	sumIrradiance *= DDGI_2PI;
 	sumIrradiance *= _IndirectIntensity;
 	
 	return sumIrradiance * volumeWeight;
