@@ -68,8 +68,8 @@ Shader "Custom/LitRayTracing"
             #pragma multi_compile_fragment _ _SCREEN_SPACE_OCCLUSION
 
             // DDGI Debug Keywords.
-            #pragma multi_compile _ DDGI_SHOW_INDIRECT_ONLY
-            #pragma multi_compile _ DDGI_SHOW_PURE_INDIRECT_RADIANCE
+            #pragma shader_feature DDGI_SHOW_INDIRECT_ONLY
+            #pragma shader_feature DDGI_SHOW_PURE_INDIRECT_RADIANCE
 
             #define FORWARD_USE_DDGI 1
 
@@ -188,106 +188,6 @@ Shader "Custom/LitRayTracing"
                 payload.worldNormal = N;
                 payload.albedo      = albedo;
                 payload.emission    = _EmissionColor.rgb;
-
-                /*// 在本Shader中，我们需要计算交点处的所有直接光照，间接光照将在Update Radiance Pass阶段进行
-                // 在SSGI中，直接光照结果来自于_CameraColorAttachment，但基于Probe的光照是无法预知场景的直接光照的，因此只能逐帧计算
-                // 在这里原本是用TraceRayInline的方式计算Shadow Ray来确定可见性，但是Unity中Closest Hit Shader里不允许使用TraceRayInline，我们只能使用递归光线跟踪
-                float3 radiance = 0.0f;
-                {
-                    // 如果是追踪阴影的Payload触发了Closest Hit，那么我们只需声明isInShadow变量并返回
-                    if(payload.isShadowPayload)
-                    {
-                        payload.isInShadow = true;
-                        return;
-                    }
-
-                    // 如果撞击到了几何体背面，则我们无需评估光照，只需存储背面的distance信息即可
-                    if(HitKind() == HIT_KIND_TRIANGLE_BACK_FACE)
-                    {
-                        payload.distance = -0.2f * RayTCurrent();
-                        return;
-                    }
-
-                    // 如果启用relocation或classification，那么固定光线部分不会参与辐照度评估，因此我们也无需评估光照，只需存储正面的distance信息即可
-                    if((DDGI_PROBE_RELOCATION == DDGI_PROBE_RELOCATION_ON || DDGI_PROBE_CLASSIFICATION == DDGI_PROBE_CLASSIFICATION_ON)
-                        && payload.rayIndex < RTXGI_DDGI_NUM_FIXED_RAYS)
-                    {
-                        payload.distance = RayTCurrent();
-                        return;
-                    }
-                    
-                    float2 uv   = vertex.uv;
-                    float3 N    = TransformObjectToWorldNormal(vertex.normalOS);
-                    float3 T    = TransformObjectToWorldDir(vertex.tangentOS.xyz);
-                    float3 P    = TransformObjectToWorld(vertex.positionOS);
-
-                    // Evaluate Lighting via Per-Pixel Normal
-                    float3x3 tangentToWorld = CreateTangentToWorld(N, T, vertex.tangentOS.w * GetOddNegativeScale());
-                    N = UnpackNormalScale(SAMPLE_TEXTURE2D_LOD(_BumpMap, sampler_BumpMap, uv, 0), _BumpScale);
-                    N = TransformTangentToWorldDir(N, tangentToWorld, true);
-
-                    float3 albedo = SAMPLE_TEXTURE2D_LOD(_BaseMap, sampler_BaseMap, uv, 0).rgb * _BaseColor.rgb;
-
-                    for(int i = 0; i < _DirectionalLightCount; ++i)
-                    {
-                        Light dir_light = GetDDGIDirectionalLight(i);
-
-                        // Trace Shadow Ray
-                        RayDesc shadowRayDesc;
-                        shadowRayDesc.Origin    = P;
-                        shadowRayDesc.Direction = dir_light.direction;
-                        shadowRayDesc.TMin      = 1e-1f;
-                        shadowRayDesc.TMax      = FLT_MAX;
-
-                        DDGIPayload shadowPayload;
-                        shadowPayload.radiance          = 0.0f; // We dont care this.
-                        shadowPayload.distance          = 0.0f; // We dont care this.
-                        shadowPayload.isShadowPayload   = true;
-                        shadowPayload.isInShadow        = false;
-                        shadowPayload.rayIndex          = 0u;   // We dont care this.
-
-                        TraceRay(_AccelerationStructure, RAY_FLAG_NONE, 0xFF, 0, 1, 0, shadowRayDesc, shadowPayload);
-
-                        if(shadowPayload.isInShadow) dir_light.shadowAttenuation = 0.0f;
-                        
-                        // Accumulate Radiance.
-                        radiance += dir_light.color * dir_light.shadowAttenuation * saturate(dot(dir_light.direction, N)) * Lambert() * albedo;
-                    }
-
-                    for(int j = 0; j < _PunctualLightCount; ++j)
-                    {
-                        Light punctual_light = GetDDGIPunctualLight(j, P);
-
-                        // Trace Shadow Ray
-                        float3 lightPos = PunctualLightBuffer[j].position.xyz;
-                        
-                        RayDesc shadowRayDesc;
-                        shadowRayDesc.Origin    = P;
-                        shadowRayDesc.Direction = punctual_light.direction;
-                        shadowRayDesc.TMin      = 1e-1f;
-                        shadowRayDesc.TMax      = length(lightPos - P);
-
-                        DDGIPayload shadowPayload;
-                        shadowPayload.radiance          = 0.0f; // We dont care this.
-                        shadowPayload.distance          = 0.0f; // We dont care this.
-                        shadowPayload.isShadowPayload   = true;
-                        shadowPayload.isInShadow        = false;
-                        shadowPayload.rayIndex          = 0u;   // We dont care this.
-
-                        TraceRay(_AccelerationStructure, RAY_FLAG_NONE, 0xFF, 0, 1, 0, shadowRayDesc, shadowPayload);
-
-                        if(shadowPayload.isInShadow) punctual_light.shadowAttenuation = 0.0f;
-
-                        // Accumulate Radiance.
-                        radiance += punctual_light.color * punctual_light.shadowAttenuation * punctual_light.distanceAttenuation *
-                            saturate(dot(punctual_light.direction, N)) * Lambert() * albedo;
-                    }
-
-                    radiance += _EmissionColor;
-                    radiance += (min(albedo, float3(0.9f, 0.9f, 0.9f)) * Lambert()) * SampleDDGIIrradiance(P, N, WorldRayDirection()); // SampleDDGIIrradiance的结果相当于次生光源
-                }
-                payload.radiance = radiance;
-                payload.distance = RayTCurrent();*/
             }
             
             ENDHLSL

@@ -7,6 +7,7 @@ using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 using UnityEngine.SceneManagement;
+using ProfilingScope = UnityEngine.Rendering.ProfilingScope;
 using Random = System.Random;
 
 public sealed class DDGIFeature : ScriptableRendererFeature
@@ -79,7 +80,8 @@ public sealed class DDGIFeature : ScriptableRendererFeature
             public float _Pad0;
         }
         private DDGIVolumeGpu mDDGIVolumeGpu;
-        
+        private ConstantBuffer<DDGIVolumeGpu> mDDGIVolumeGpuCB;
+
         #region [Shader Resources]
 
         private RayTracingShader mDDGIRayTraceShader;
@@ -254,59 +256,28 @@ public sealed class DDGIFeature : ScriptableRendererFeature
             public static readonly int DirectionalLightBuffer = Shader.PropertyToID("DirectionalLightBuffer");
             public static readonly int PunctualLightBuffer = Shader.PropertyToID("PunctualLightBuffer");
             
-            public static readonly int DDGIVolumeGpu = Shader.PropertyToID("DDGIVolumeGpu"); 
-            public static readonly int _StartPosition = Shader.PropertyToID("_StartPosition"); 
-            public static readonly int _ProbeRotation = Shader.PropertyToID("_ProbeRotation"); 
-            public static readonly int _RaysPerProbe = Shader.PropertyToID("_RaysPerProbe"); 
-            public static readonly int _ProbeSize = Shader.PropertyToID("_ProbeSize"); 
-            public static readonly int _MaxRaysPerProbe = Shader.PropertyToID("_MaxRaysPerProbe"); 
-            public static readonly int _ProbeCount = Shader.PropertyToID("_ProbeCount"); 
-            public static readonly int _NormalBias = Shader.PropertyToID("_NormalBias"); 
-            public static readonly int _IndirectIntensity = Shader.PropertyToID("_IndirectIntensity"); 
-            public static readonly int _BiasMultiplier = Shader.PropertyToID("_BiasMultiplier"); 
-            public static readonly int _NormalBiasMultiplier = Shader.PropertyToID("_NormalBiasMultiplier"); 
-            public static readonly int _ViewBiasMultiplier = Shader.PropertyToID("_ViewBiasMultiplier"); 
-            public static readonly int _AxialDistanceMultiplier = Shader.PropertyToID("_AxialDistanceMultiplier"); 
-            public static readonly int _EnergyPreservation = Shader.PropertyToID("_EnergyPreservation");
-            public static readonly int _HistoryBlendWeight = Shader.PropertyToID("_HistoryBlendWeight");
-            public static readonly int _DirectionalLightCount = Shader.PropertyToID("_DirectionalLightCount");
-            public static readonly int _PunctualLightCount = Shader.PropertyToID("_PunctualLightCount");
-            
+            public static readonly int DDGIVolumeGpu = Shader.PropertyToID("DDGIVolumeGpu");
+
             public static readonly int _ProbeIrradiance = Shader.PropertyToID("_ProbeIrradiance");
             public static readonly int _ProbeIrradianceHistory = Shader.PropertyToID("_ProbeIrradianceHistory");
             public static readonly int _ProbeDistance = Shader.PropertyToID("_ProbeDistance");
             public static readonly int _ProbeDistanceHistory = Shader.PropertyToID("_ProbeDistanceHistory");
 
             public static readonly int _AccelerationStructure = Shader.PropertyToID("_AccelerationStructure");
-            public static readonly int _RandomVector = Shader.PropertyToID("_RandomVector");
-            public static readonly int _RandomAngle = Shader.PropertyToID("_RandomAngle");
 
             // For Sky Light Sampling
             public static readonly string DDGI_SKYLIGHT_MODE = "DDGI_SKYLIGHT_MODE";
             public static readonly int _SkyboxCubemap = Shader.PropertyToID("_SkyboxCubemap");
-            public static readonly int _SkyboxIntensityMultiplier = Shader.PropertyToID("_SkyboxIntensityMultiplier");
-            public static readonly int _SkyboxTintColor = Shader.PropertyToID("_SkyboxTintColor");
-            public static readonly int _SkyboxExposure = Shader.PropertyToID("_SkyboxExposure");
-            public static readonly int _SkyColor = Shader.PropertyToID("_SkyColor");
-            public static readonly int _EquatorColor = Shader.PropertyToID("_EquatorColor");
-            public static readonly int _GroundColor = Shader.PropertyToID("_GroundColor");
-            public static readonly int _AmbientColor = Shader.PropertyToID("_AmbientColor");
 
             // For Probe Relocation
             public static readonly string DDGI_PROBE_RELOCATION = "DDGI_PROBE_RELOCATION";
             public static readonly int _ProbeData = Shader.PropertyToID("_ProbeData");
-            public static readonly int _ProbeFixedRayBackfaceThreshold = Shader.PropertyToID("_ProbeFixedRayBackfaceThreshold");
-            public static readonly int _ProbeMinFrontfaceDistance = Shader.PropertyToID("_ProbeMinFrontfaceDistance");
-            
-            // For Probe Classification
-            public static readonly int DDGI_PROBE_CLASSIFICATION = Shader.PropertyToID("DDGI_PROBE_CLASSIFICATION");
 
             // For Probe Debug
             public static readonly string DDGI_SHOW_INDIRECT_ONLY = "DDGI_SHOW_INDIRECT_ONLY";
             public static readonly string DDGI_SHOW_PURE_INDIRECT_RADIANCE = "DDGI_SHOW_PURE_INDIRECT_RADIANCE";
             
             // For Probe Reduction (Variability)
-            public static readonly int DDGI_PROBE_REDUCTION = Shader.PropertyToID("DDGI_PROBE_REDUCTION");
             public static readonly int _ReductionInputSize = Shader.PropertyToID("_ReductionInputSize");
             public static readonly int _ProbeVariability = Shader.PropertyToID("_ProbeVariability");
             public static readonly int _ProbeVariabilityAverage = Shader.PropertyToID("_ProbeVariabilityAverage");
@@ -338,7 +309,9 @@ public sealed class DDGIFeature : ScriptableRendererFeature
             RayTracingAccelerationStructure.RASSettings setting = new RayTracingAccelerationStructure.RASSettings
                 (RayTracingAccelerationStructure.ManagementMode.Automatic, RayTracingAccelerationStructure.RayTracingModeMask.Everything,  255);
             mAccelerationStructure = new RayTracingAccelerationStructure(setting);
-            
+
+            mDDGIVolumeGpuCB = new ConstantBuffer<DDGIVolumeGpu>();
+
             // Shader.Find不稳健，Shader在打包后可能出现丢失的情况，此时用Find是无效的
             // 出于演示目的在此摆烂
             mCubemapSkyPS = Shader.Find("Skybox/Cubemap");
@@ -485,6 +458,7 @@ public sealed class DDGIFeature : ScriptableRendererFeature
 
             ResetHistoryInfoIfNeeded(cmd);
             
+            // 确保该函数在PushGpuConstants之前运行，否则灯光相关常量不会被推送
             UpdateSceneLights(cmd);
 
             // 注：该函数每调用一次，随机数都会更新，进而导致_RandomVector和_RandomAngle发生改变
@@ -508,8 +482,7 @@ public sealed class DDGIFeature : ScriptableRendererFeature
                     cmd.SetRayTracingBufferParam(mDDGIRayTraceShader, GpuParams.RayBuffer, mRayBuffer);
                     cmd.SetGlobalBuffer(GpuParams.DirectionalLightBuffer, mDirectionalLightBuffer);     // We will use it in closest hit shader, not in actual .raytrace shader
                     cmd.SetGlobalBuffer(GpuParams.PunctualLightBuffer, mPunctualLightBuffer);           // We will use it in closest hit shader, not in actual .raytrace shader
-
-                    // 实际调度的光线数量按本帧预算为准，若按照22*22*22*144的设置，总计1,533,312（153万）条光线，相当于1080p-1spp光线跟踪的73%，该设置能得到非常平滑的效果，实际可以更低
+                    
                     cmd.DispatchRays(mDDGIRayTraceShader, GpuParams.RayGenShaderName, (uint)mDDGIVolumeCpu.NumRays, (uint)numProbesFlat, 1, camera);
                 }
             }
@@ -685,6 +658,8 @@ public sealed class DDGIFeature : ScriptableRendererFeature
             if (mProbeData != null) { mProbeData.Release(); mProbeData = null; }
             if (mProbeVariability != null) { mProbeVariability.Release(); mProbeVariability = null; }
             if (mProbeVariabilityAverage != null) { mProbeVariabilityAverage.Release(); mProbeVariabilityAverage = null; }
+
+            if (mDDGIVolumeGpuCB != null) { mDDGIVolumeGpuCB.Release(); mDDGIVolumeGpuCB = null; }
         }
         
         
@@ -710,6 +685,9 @@ public sealed class DDGIFeature : ScriptableRendererFeature
             var randomVec = Vector3.Normalize(new Vector3(2.0f * random - 1.0f, 2.0f * random - 1.0f, 2.0f * random - 1.0f));
             var randomAngle = random * Mathf.PI * 2.0f;
             
+            // -------------------------------------------------
+            // 填充gpu端常量（灯光相关常量在UpdateSceneLights中更新）
+            // -------------------------------------------------
             Quaternion rotation;
             if (mddgiOverride.useCustomBounds.value && mCustomGIVolume != null) { rotation = mCustomGIVolume.transform.rotation; }
             else { rotation = Quaternion.Euler(mddgiOverride.probeRotationDegrees.value); }
@@ -735,45 +713,13 @@ public sealed class DDGIFeature : ScriptableRendererFeature
             mDDGIVolumeGpu._ProbeMinFrontfaceDistance = mddgiOverride.probeMinFrontfaceDistance.value;
             mDDGIVolumeGpu.DDGI_PROBE_REDUCTION = mddgiOverride.enableProbeVariability.value ? 1 : 0;
             mDDGIVolumeGpu._Pad0 = 0.0f;
-            ConstantBuffer.PushGlobal(cmd, mDDGIVolumeGpu, GpuParams.DDGIVolumeGpu);
-            
-            /*cmd.SetGlobalVector(GpuParams._RandomVector, randomVec);
-            cmd.SetGlobalFloat(GpuParams._RandomAngle, randomAngle);*/
-            
-            // Compute Probe Volume Rotation.
-            /*Quaternion rotation;
-            if (mddgiOverride.useCustomBounds.value && mCustomGIVolume != null)
-            {
-                rotation = mCustomGIVolume.transform.rotation;
-            }
-            else
-            {
-                rotation = Quaternion.Euler(mddgiOverride.probeRotationDegrees.value);
-            }
-            cmd.SetGlobalVector(GpuParams._ProbeRotation, new Vector4(rotation.x, rotation.y, rotation.z, rotation.w));*/
-            
-            /*cmd.SetGlobalVector(GpuParams._StartPosition, mDDGIVolumeCpu.Origin - mDDGIVolumeCpu.Extents);
-            var a = 2.0f * mDDGIVolumeCpu.Extents;
-            var b = new Vector3(mDDGIVolumeCpu.NumProbes.x, mDDGIVolumeCpu.NumProbes.y, mDDGIVolumeCpu.NumProbes.z) - Vector3.one;
-            cmd.SetGlobalVector(GpuParams._ProbeSize, new Vector4(a.x / b.x, a.y / b.y, a.z / b.z, 0.0f));
-            cmd.SetGlobalInt(GpuParams._RaysPerProbe, mDDGIVolumeCpu.NumRays);
-            cmd.SetGlobalInt(GpuParams._MaxRaysPerProbe, mDDGIVolumeCpu.MaxNumRays);
-            cmd.SetGlobalVector(GpuParams._ProbeCount, new Vector4(mDDGIVolumeCpu.NumProbes.x, mDDGIVolumeCpu.NumProbes.y, mDDGIVolumeCpu.NumProbes.z, 0.0f));
-            cmd.SetGlobalFloat(GpuParams._NormalBias, 0.25f);
-            cmd.SetGlobalFloat(GpuParams._EnergyPreservation, 0.85f);
-            cmd.SetGlobalFloat(GpuParams._HistoryBlendWeight, 0.98f);
+            mDDGIVolumeGpuCB.PushGlobal(cmd, mDDGIVolumeGpu, GpuParams.DDGIVolumeGpu); 
 
-            cmd.SetGlobalFloat(GpuParams._IndirectIntensity, mddgiOverride.indirectIntensity.value);
-            cmd.SetGlobalFloat(GpuParams._NormalBiasMultiplier, mddgiOverride.normalBiasMultiplier.value);
-            cmd.SetGlobalFloat(GpuParams._ViewBiasMultiplier, mddgiOverride.viewBiasMultiplier.value);
-            //cmd.SetGlobalFloat(GpuParams._BiasMultiplier, mddgiOverride.biasMultiplier.value);
-            //cmd.SetGlobalFloat(GpuParams._AxialDistanceMultiplier, mddgiOverride.axialDistanceMultiplier.value);
-            
-            cmd.SetGlobalFloat(GpuParams._ProbeFixedRayBackfaceThreshold, mddgiOverride.probeFixedRayBackfaceThreshold.value);
-            cmd.SetGlobalFloat(GpuParams._ProbeMinFrontfaceDistance, mddgiOverride.probeMinFrontfaceDistance.value);
-            
+            // -------------------------------------------------
+            // Shader Keywords.
+            // -------------------------------------------------
             cmd.DisableShaderKeyword(GpuParams.DDGI_SHOW_INDIRECT_ONLY);
-            cmd.DisableShaderKeyword(GpuParams.DDGI_SHOW_PURE_INDIRECT_RADIANCE);*/
+            cmd.DisableShaderKeyword(GpuParams.DDGI_SHOW_PURE_INDIRECT_RADIANCE);
             if (mddgiOverride.debugIndirect.value)
             {
                 switch (mddgiOverride.indirectDebugMode.value)
@@ -788,10 +734,6 @@ public sealed class DDGIFeature : ScriptableRendererFeature
                         break;
                 }
             }
-            
-            /*cmd.SetGlobalInt(GpuParams.DDGI_PROBE_RELOCATION, mddgiOverride.enableProbeRelocation.value ? 1 : 0);
-            cmd.SetGlobalInt(GpuParams.DDGI_PROBE_REDUCTION, mddgiOverride.enableProbeVariability.value ? 1 : 0);
-            cmd.SetGlobalInt(GpuParams.DDGI_PROBE_CLASSIFICATION, mddgiOverride.enableProbeClassification.value ? 1 : 0);*/
         }
 
         #region [Light Update]
@@ -1277,13 +1219,14 @@ public sealed class DDGIFeature : ScriptableRendererFeature
         {
             mDDGIPass?.Release();
             mDDGIVisualizePass?.Release();
+            return;
         }
         
         mIsRayTracingSupported = SystemInfo.supportsRayTracing;
         if (!mIsRayTracingSupported) return;
 
-        mDDGIPass = new DDGIPass();
-        mDDGIVisualizePass = new DDGIVisualizePass();
+        mDDGIPass ??= new DDGIPass();
+        mDDGIVisualizePass ??= new DDGIVisualizePass();
 
         mDDGIVisualizeSphere = Resources.Load<Mesh>("Meshes/DDGIVisualizationSphere");
 
@@ -1306,17 +1249,15 @@ public sealed class DDGIFeature : ScriptableRendererFeature
     protected override void Dispose(bool disposing)
     {
         base.Dispose(disposing);
-        
-        if (!mIsRayTracingSupported) return;
-        
-        mDDGIPass?.Release();
+
+        mDDGIPass?.Release(); 
         mDDGIVisualizePass?.Release();
 
     #if UNITY_EDITOR
         EditorSceneManager.sceneOpened -= OnSceneOpened;
     #endif
     }
-    
+
     public void Reinitialize()
     {
         mDDGIPass.Reinitialize();
