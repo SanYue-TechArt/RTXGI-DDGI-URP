@@ -39,6 +39,46 @@ public sealed class DDGIFeature : ScriptableRendererFeature
             public int NumRays;
         }
         private DDGIVolumeCpu mDDGIVolumeCpu;
+
+        struct DDGIVolumeGpu
+        {
+            public Vector4 _ProbeRotation;
+            public Vector3 _StartPosition;
+            public int _RaysPerProbe;
+            public Vector3 _ProbeSize;
+            public int _MaxRaysPerProbe;
+            public Vector3Int _ProbeCount;
+            public float _NormalBias;
+            public Vector3 _RandomVector;
+            public float _EnergyPreservation;
+            
+            public float _RandomAngle;
+            public float _HistoryBlendWeight;
+            public float _IndirectIntensity;
+            public float _NormalBiasMultiplier;
+            
+            public float _ViewBiasMultiplier;
+            public int DDGI_PROBE_CLASSIFICATION;
+            public int DDGI_PROBE_RELOCATION;
+            public float _ProbeFixedRayBackfaceThreshold;
+            
+            public float _ProbeMinFrontfaceDistance;
+            public int _DirectionalLightCount;
+            public int _PunctualLightCount;
+            public int DDGI_SKYLIGHT_MODE;
+
+            public Vector4 _SkyboxTintColor;
+            public Vector4 _SkyColor;
+            public Vector4 _EquatorColor;
+            public Vector4 _GroundColor;
+            public Vector4 _AmbientColor;
+            
+            public int DDGI_PROBE_REDUCTION;
+            public float _SkyboxIntensityMultiplier;
+            public float _SkyboxExposure;
+            public float _Pad0;
+        }
+        private DDGIVolumeGpu mDDGIVolumeGpu;
         
         #region [Shader Resources]
 
@@ -444,13 +484,13 @@ public sealed class DDGIFeature : ScriptableRendererFeature
             var camera = renderingData.cameraData.camera;
 
             ResetHistoryInfoIfNeeded(cmd);
+            
+            UpdateSceneLights(cmd);
 
             // 注：该函数每调用一次，随机数都会更新，进而导致_RandomVector和_RandomAngle发生改变
             // 如果不将更新随机数的逻辑抽离出来，那么该函数每帧只允许调用一次！
             PushGpuConstants(cmd);
 
-            UpdateSceneLights(cmd);
-            
             int numProbesFlat = mDDGIVolumeCpu.NumProbes.x * mDDGIVolumeCpu.NumProbes.y * mDDGIVolumeCpu.NumProbes.z;
             
             using (new ProfilingScope(cmd, new ProfilingSampler("DDGI Ray Trace Pass")))
@@ -670,11 +710,38 @@ public sealed class DDGIFeature : ScriptableRendererFeature
             var randomVec = Vector3.Normalize(new Vector3(2.0f * random - 1.0f, 2.0f * random - 1.0f, 2.0f * random - 1.0f));
             var randomAngle = random * Mathf.PI * 2.0f;
             
-            cmd.SetGlobalVector(GpuParams._RandomVector, randomVec);
-            cmd.SetGlobalFloat(GpuParams._RandomAngle, randomAngle);
+            Quaternion rotation;
+            if (mddgiOverride.useCustomBounds.value && mCustomGIVolume != null) { rotation = mCustomGIVolume.transform.rotation; }
+            else { rotation = Quaternion.Euler(mddgiOverride.probeRotationDegrees.value); }
+            mDDGIVolumeGpu._ProbeRotation = new Vector4(rotation.x, rotation.y, rotation.z, rotation.w);
+            mDDGIVolumeGpu._StartPosition = mDDGIVolumeCpu.Origin - mDDGIVolumeCpu.Extents;
+            mDDGIVolumeGpu._RaysPerProbe = mDDGIVolumeCpu.NumRays;
+            var a = 2.0f * mDDGIVolumeCpu.Extents;
+            var b = new Vector3(mDDGIVolumeCpu.NumProbes.x, mDDGIVolumeCpu.NumProbes.y, mDDGIVolumeCpu.NumProbes.z) - Vector3.one;
+            mDDGIVolumeGpu._ProbeSize = new Vector3(a.x / b.x, a.y / b.y, a.z / b.z);
+            mDDGIVolumeGpu._MaxRaysPerProbe = mDDGIVolumeCpu.MaxNumRays;
+            mDDGIVolumeGpu._ProbeCount = new Vector3Int(mDDGIVolumeCpu.NumProbes.x, mDDGIVolumeCpu.NumProbes.y, mDDGIVolumeCpu.NumProbes.z);
+            mDDGIVolumeGpu._NormalBias = 0.25f;
+            mDDGIVolumeGpu._RandomVector = randomVec;
+            mDDGIVolumeGpu._EnergyPreservation = 0.85f;
+            mDDGIVolumeGpu._RandomAngle = randomAngle;
+            mDDGIVolumeGpu._HistoryBlendWeight = 0.98f;
+            mDDGIVolumeGpu._IndirectIntensity = mddgiOverride.indirectIntensity.value;
+            mDDGIVolumeGpu._NormalBiasMultiplier = mddgiOverride.normalBiasMultiplier.value;
+            mDDGIVolumeGpu._ViewBiasMultiplier = mddgiOverride.viewBiasMultiplier.value;
+            mDDGIVolumeGpu.DDGI_PROBE_CLASSIFICATION = mddgiOverride.enableProbeClassification.value ? 1 : 0;
+            mDDGIVolumeGpu.DDGI_PROBE_RELOCATION = mddgiOverride.enableProbeRelocation.value ? 1 : 0;
+            mDDGIVolumeGpu._ProbeFixedRayBackfaceThreshold = mddgiOverride.probeFixedRayBackfaceThreshold.value;
+            mDDGIVolumeGpu._ProbeMinFrontfaceDistance = mddgiOverride.probeMinFrontfaceDistance.value;
+            mDDGIVolumeGpu.DDGI_PROBE_REDUCTION = mddgiOverride.enableProbeVariability.value ? 1 : 0;
+            mDDGIVolumeGpu._Pad0 = 0.0f;
+            ConstantBuffer.PushGlobal(cmd, mDDGIVolumeGpu, GpuParams.DDGIVolumeGpu);
+            
+            /*cmd.SetGlobalVector(GpuParams._RandomVector, randomVec);
+            cmd.SetGlobalFloat(GpuParams._RandomAngle, randomAngle);*/
             
             // Compute Probe Volume Rotation.
-            Quaternion rotation;
+            /*Quaternion rotation;
             if (mddgiOverride.useCustomBounds.value && mCustomGIVolume != null)
             {
                 rotation = mCustomGIVolume.transform.rotation;
@@ -683,9 +750,9 @@ public sealed class DDGIFeature : ScriptableRendererFeature
             {
                 rotation = Quaternion.Euler(mddgiOverride.probeRotationDegrees.value);
             }
-            cmd.SetGlobalVector(GpuParams._ProbeRotation, new Vector4(rotation.x, rotation.y, rotation.z, rotation.w));
+            cmd.SetGlobalVector(GpuParams._ProbeRotation, new Vector4(rotation.x, rotation.y, rotation.z, rotation.w));*/
             
-            cmd.SetGlobalVector(GpuParams._StartPosition, mDDGIVolumeCpu.Origin - mDDGIVolumeCpu.Extents);
+            /*cmd.SetGlobalVector(GpuParams._StartPosition, mDDGIVolumeCpu.Origin - mDDGIVolumeCpu.Extents);
             var a = 2.0f * mDDGIVolumeCpu.Extents;
             var b = new Vector3(mDDGIVolumeCpu.NumProbes.x, mDDGIVolumeCpu.NumProbes.y, mDDGIVolumeCpu.NumProbes.z) - Vector3.one;
             cmd.SetGlobalVector(GpuParams._ProbeSize, new Vector4(a.x / b.x, a.y / b.y, a.z / b.z, 0.0f));
@@ -706,7 +773,7 @@ public sealed class DDGIFeature : ScriptableRendererFeature
             cmd.SetGlobalFloat(GpuParams._ProbeMinFrontfaceDistance, mddgiOverride.probeMinFrontfaceDistance.value);
             
             cmd.DisableShaderKeyword(GpuParams.DDGI_SHOW_INDIRECT_ONLY);
-            cmd.DisableShaderKeyword(GpuParams.DDGI_SHOW_PURE_INDIRECT_RADIANCE);
+            cmd.DisableShaderKeyword(GpuParams.DDGI_SHOW_PURE_INDIRECT_RADIANCE);*/
             if (mddgiOverride.debugIndirect.value)
             {
                 switch (mddgiOverride.indirectDebugMode.value)
@@ -722,9 +789,9 @@ public sealed class DDGIFeature : ScriptableRendererFeature
                 }
             }
             
-            cmd.SetGlobalInt(GpuParams.DDGI_PROBE_RELOCATION, mddgiOverride.enableProbeRelocation.value ? 1 : 0);
+            /*cmd.SetGlobalInt(GpuParams.DDGI_PROBE_RELOCATION, mddgiOverride.enableProbeRelocation.value ? 1 : 0);
             cmd.SetGlobalInt(GpuParams.DDGI_PROBE_REDUCTION, mddgiOverride.enableProbeVariability.value ? 1 : 0);
-            cmd.SetGlobalInt(GpuParams.DDGI_PROBE_CLASSIFICATION, mddgiOverride.enableProbeClassification.value ? 1 : 0);
+            cmd.SetGlobalInt(GpuParams.DDGI_PROBE_CLASSIFICATION, mddgiOverride.enableProbeClassification.value ? 1 : 0);*/
         }
 
         #region [Light Update]
@@ -793,9 +860,11 @@ public sealed class DDGIFeature : ScriptableRendererFeature
 
             mDirectionalLightBuffer.SetData(gpuDirectionalLights.ToArray());
             mPunctualLightBuffer.SetData(gpuPunctualLights.ToArray());
-            
-            cmd.SetGlobalInt(GpuParams._DirectionalLightCount, gpuDirectionalLights.Count);
-            cmd.SetGlobalInt(GpuParams._PunctualLightCount, gpuPunctualLights.Count);
+
+            mDDGIVolumeGpu._DirectionalLightCount = gpuDirectionalLights.Count;
+            mDDGIVolumeGpu._PunctualLightCount = gpuPunctualLights.Count;
+            /*cmd.SetGlobalInt(GpuParams._DirectionalLightCount, gpuDirectionalLights.Count);
+            cmd.SetGlobalInt(GpuParams._PunctualLightCount, gpuPunctualLights.Count);*/
             
             
             // -----------------------------
@@ -907,10 +976,14 @@ public sealed class DDGIFeature : ScriptableRendererFeature
 
             if (skybox.shader == mCubemapSkyPS)
             {
-                cmd.SetRayTracingIntParam(mDDGIRayTraceShader, GpuParams.DDGI_SKYLIGHT_MODE, (int)SkyLightMode.DDGI_SKYLIGHT_MODE_SKYBOX_CUBEMAP);
+                mDDGIVolumeGpu.DDGI_SKYLIGHT_MODE = (int)SkyLightMode.DDGI_SKYLIGHT_MODE_SKYBOX_CUBEMAP;
+                mDDGIVolumeGpu._SkyboxIntensityMultiplier = RenderSettings.ambientIntensity;
+                mDDGIVolumeGpu._SkyboxTintColor = skybox.GetColor(SkyboxParam._Tint);
+                mDDGIVolumeGpu._SkyboxExposure = skybox.GetFloat(SkyboxParam._Exposure);
+                /*cmd.SetRayTracingIntParam(mDDGIRayTraceShader, GpuParams.DDGI_SKYLIGHT_MODE, (int)SkyLightMode.DDGI_SKYLIGHT_MODE_SKYBOX_CUBEMAP);
                 cmd.SetRayTracingFloatParam(mDDGIRayTraceShader, GpuParams._SkyboxIntensityMultiplier, RenderSettings.ambientIntensity);
                 cmd.SetRayTracingVectorParam(mDDGIRayTraceShader, GpuParams._SkyboxTintColor, skybox.GetColor(SkyboxParam._Tint));
-                cmd.SetRayTracingFloatParam(mDDGIRayTraceShader, GpuParams._SkyboxExposure, skybox.GetFloat(SkyboxParam._Exposure));
+                cmd.SetRayTracingFloatParam(mDDGIRayTraceShader, GpuParams._SkyboxExposure, skybox.GetFloat(SkyboxParam._Exposure));*/
                 cmd.SetRayTracingTextureParam(mDDGIRayTraceShader, GpuParams._SkyboxCubemap, skybox.GetTexture(SkyboxParam._Tex));
             }
             else
@@ -922,21 +995,28 @@ public sealed class DDGIFeature : ScriptableRendererFeature
 
         private void UpdateSkyLightAsGradient(CommandBuffer cmd)
         {
-            cmd.SetRayTracingIntParam(mDDGIRayTraceShader, GpuParams.DDGI_SKYLIGHT_MODE, (int)SkyLightMode.DDGI_SKYLIGHT_MODE_GRADIENT);
+            mDDGIVolumeGpu.DDGI_SKYLIGHT_MODE = (int)SkyLightMode.DDGI_SKYLIGHT_MODE_GRADIENT;
+            mDDGIVolumeGpu._SkyColor = RenderSettings.ambientSkyColor;
+            mDDGIVolumeGpu._EquatorColor = RenderSettings.ambientEquatorColor;
+            mDDGIVolumeGpu._GroundColor = RenderSettings.ambientGroundColor;
+            /*cmd.SetRayTracingIntParam(mDDGIRayTraceShader, GpuParams.DDGI_SKYLIGHT_MODE, (int)SkyLightMode.DDGI_SKYLIGHT_MODE_GRADIENT);
             cmd.SetRayTracingVectorParam(mDDGIRayTraceShader, GpuParams._SkyColor, RenderSettings.ambientSkyColor);
             cmd.SetRayTracingVectorParam(mDDGIRayTraceShader, GpuParams._EquatorColor, RenderSettings.ambientEquatorColor);
-            cmd.SetRayTracingVectorParam(mDDGIRayTraceShader, GpuParams._GroundColor, RenderSettings.ambientGroundColor);
+            cmd.SetRayTracingVectorParam(mDDGIRayTraceShader, GpuParams._GroundColor, RenderSettings.ambientGroundColor);*/
         }
 
         private void UpdateSkyLightAsColor(CommandBuffer cmd)
         {
-            cmd.SetRayTracingIntParam(mDDGIRayTraceShader, GpuParams.DDGI_SKYLIGHT_MODE, (int)SkyLightMode.DDGI_SKYLIGHT_MODE_COLOR);
-            cmd.SetRayTracingVectorParam(mDDGIRayTraceShader, GpuParams._AmbientColor, RenderSettings.ambientSkyColor);
+            mDDGIVolumeGpu.DDGI_SKYLIGHT_MODE = (int)SkyLightMode.DDGI_SKYLIGHT_MODE_COLOR;
+            mDDGIVolumeGpu._AmbientColor = RenderSettings.ambientSkyColor;
+            /*cmd.SetRayTracingIntParam(mDDGIRayTraceShader, GpuParams.DDGI_SKYLIGHT_MODE, (int)SkyLightMode.DDGI_SKYLIGHT_MODE_COLOR);
+            cmd.SetRayTracingVectorParam(mDDGIRayTraceShader, GpuParams._AmbientColor, RenderSettings.ambientSkyColor);*/
         }
 
         private void UpdateSkyLightAsBlack(CommandBuffer cmd)
         {
-            cmd.SetRayTracingIntParam(mDDGIRayTraceShader, GpuParams.DDGI_SKYLIGHT_MODE, (int)SkyLightMode.DDGI_SKYLIGHT_MODE_UNSUPPORTED);
+            mDDGIVolumeGpu.DDGI_SKYLIGHT_MODE = (int)SkyLightMode.DDGI_SKYLIGHT_MODE_UNSUPPORTED;
+            //cmd.SetRayTracingIntParam(mDDGIRayTraceShader, GpuParams.DDGI_SKYLIGHT_MODE, (int)SkyLightMode.DDGI_SKYLIGHT_MODE_UNSUPPORTED);
         }
 
         #endregion

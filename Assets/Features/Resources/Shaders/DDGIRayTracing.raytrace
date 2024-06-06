@@ -13,17 +13,17 @@
 [shader("raygeneration")]
 void DDGI_RayGen()
 {
-    uint probeIdx   = DispatchRaysIndex().y;
-    uint rayIdx     = DispatchRaysIndex().x;
+    uint probeIdx       = DispatchRaysIndex().y;
+    uint rayIdx         = DispatchRaysIndex().x;
+    uint rayBufferIdx   = probeIdx * _MaxRaysPerProbe + rayIdx;
     
     // 如果当前probe处于禁用状态，我们只需为其分配32条光线用于逐帧classification判定，而跳过多余的光线
     const uint3 probeDataCoords = DDGIGetProbeTexelCoordsOneByOne(probeIdx);
     const int   probeState      = DDGILoadProbeState(probeDataCoords);
     if(probeState == DDGI_PROBE_STATE_INACTIVE && rayIdx >= RTXGI_DDGI_NUM_FIXED_RAYS) return;
     
-    float3 randomDirection = DDGIGetProbeRayDirection(rayIdx);
-    
-    float3 probeLocation = DDGIGetProbeWorldPosition(probeIdx);
+    float3 randomDirection  = DDGIGetProbeRayDirection(rayIdx);
+    float3 probeLocation    = DDGIGetProbeWorldPosition(probeIdx);
     
     RayDesc rayDesc;
     rayDesc.Origin      = probeLocation;
@@ -31,40 +31,116 @@ void DDGI_RayGen()
     rayDesc.TMin        = 0.0f;
     rayDesc.TMax        = FLT_MAX;
     
-    DDGIPayload payload;
-    payload.radiance        = float3(0, 0, 0);
-    payload.distance        = Max(_ProbeSize) * 1.5f;
-    payload.isShadowPayload = false;
-    payload.isInShadow      = false;
-    payload.rayIndex        = rayIdx;
+    // Primary Tracing.
+    DDGIPayload primaryPayload = GetPrimaryPayload();
+    TraceRay(_AccelerationStructure, RAY_FLAG_NONE, 0xFF, 0, 0, 0, rayDesc, primaryPayload);
     
-    TraceRay(_AccelerationStructure, RAY_FLAG_NONE, 0xFF, 0, 0, 0, rayDesc, payload);
+    // Early Out: Ray miss to sky.
+    if(primaryPayload.isMissed)
+    {
+        RayBuffer[rayBufferIdx] = float4(primaryPayload.skySample, 1e27f);
+        return;
+    }
+    
+    // Early Out: Backface hit.
+    if(primaryPayload.hitKind == HIT_KIND_TRIANGLE_BACK_FACE) 
+    {
+        RayBuffer[rayBufferIdx] = float4(0.0f, 0.0f, 0.0f, -0.2f * primaryPayload.distance);
+        return;
+    }
+    
+    // Early Out: Fixed Ray skip.
+    if((DDGI_PROBE_RELOCATION == DDGI_PROBE_RELOCATION_ON || DDGI_PROBE_CLASSIFICATION == DDGI_PROBE_CLASSIFICATION_ON)
+        && rayIdx < RTXGI_DDGI_NUM_FIXED_RAYS) 
+    {
+        RayBuffer[rayBufferIdx] = float4(0.0f, 0.0f, 0.0f, primaryPayload.distance);
+        return;
+    }
+    
+    // ----------------------------
+    // Lighting Evaluation.
+    // ----------------------------
+    float3  radiance = 0.0f;
+    float   distance = primaryPayload.distance;
+    
+    float3 N        = primaryPayload.worldNormal;
+    float3 P        = primaryPayload.worldPos;
+    float3 albedo   = primaryPayload.albedo;
+    float3 emission = primaryPayload.emission;
+    
+    [loop]
+    for(int i = 0; i < _DirectionalLightCount; ++i)
+    {
+        Light dir_light = GetDDGIDirectionalLight(i);
+        
+        RayDesc shadowRayDesc;
+        shadowRayDesc.Origin    = P;
+        shadowRayDesc.Direction = dir_light.direction;
+        shadowRayDesc.TMin      = 1e-1f;
+        shadowRayDesc.TMax      = FLT_MAX;
+        
+        DDGIPayload shadowPayload = GetShadowPayload();
+        TraceRay(_AccelerationStructure, RAY_FLAG_NONE, 0xFF, 0, 1, 0, shadowRayDesc, shadowPayload);
+        
+        if(shadowPayload.isInShadow) dir_light.shadowAttenuation = 0.0f;
+        
+        // Accumulate Radiance.
+        radiance += dir_light.color * dir_light.shadowAttenuation * saturate(dot(dir_light.direction, N)) * Lambert() * albedo;
+    }
+    
+    [loop]
+    for(int j = 0; j < _PunctualLightCount; ++j)
+    {
+        Light punctual_light = GetDDGIPunctualLight(j, P);
+        
+        float3 lightPos = PunctualLightBuffer[j].position.xyz;
+        
+        RayDesc shadowRayDesc;
+        shadowRayDesc.Origin    = P;
+        shadowRayDesc.Direction = punctual_light.direction;
+        shadowRayDesc.TMin      = 1e-1f;
+        shadowRayDesc.TMax      = length(lightPos - P);
+        
+        DDGIPayload shadowPayload = GetShadowPayload();
+        TraceRay(_AccelerationStructure, RAY_FLAG_NONE, 0xFF, 0, 1, 0, shadowRayDesc, shadowPayload);
+        
+        if(shadowPayload.isInShadow) punctual_light.shadowAttenuation = 0.0f;
+        
+        // Accumulate Radiance.
+        radiance += punctual_light.color * punctual_light.shadowAttenuation * punctual_light.distanceAttenuation *
+            saturate(dot(punctual_light.direction, N)) * Lambert() * albedo;
+    }
+    
+    radiance += primaryPayload.emission;
+    radiance += (min(albedo, float3(0.9f, 0.9f, 0.9f)) * Lambert()) * SampleDDGIIrradiance(P, N, primaryPayload.worldRayDirection); // SampleDDGIIrradiance的结果相当于次生光源
     
     // 将每一根光线的追踪结果记录在RayBuffer中
-    RayBuffer[(probeIdx * _MaxRaysPerProbe + rayIdx)] = float4(payload.radiance, payload.distance);
+    RayBuffer[rayBufferIdx] = float4(radiance, distance);
 }
 
 [shader("miss")]
 void DDGI_Miss(inout DDGIPayload payload)
 {
+    payload.isMissed = true;
+
     if(DDGI_SKYLIGHT_MODE == DDGI_SKYLIGHT_MODE_SKYBOX_CUBEMAP)
     {
-        // 这里应该有个HDR Decode过程？但没Set过来，算了摆了
-        float4 encodedIrradiance = float4(SAMPLE_TEXTURECUBE_LOD(_SkyboxCubemap, sampler_SkyboxCubemap, WorldRayDirection(), 0));
-        payload.radiance         = encodedIrradiance.rgb * _SkyboxTintColor.rgb * _SkyboxExposure * _SkyboxIntensityMultiplier;
+        // 这里应该有个HDR Decode过程？
+        float4 encodedIrradiance  = float4(SAMPLE_TEXTURECUBE_LOD(_SkyboxCubemap, sampler_SkyboxCubemap, WorldRayDirection(), 0));
+        payload.skySample         = encodedIrradiance.rgb * _SkyboxTintColor.rgb * _SkyboxExposure * _SkyboxIntensityMultiplier;
     }
     else if(DDGI_SKYLIGHT_MODE == DDGI_SKYLIGHT_MODE_GRADIENT)
     {
-        float3 radiance  = lerp(_EquatorColor.rgb, _GroundColor.rgb, abs(clamp(WorldRayDirection().y, -1.0f, 0.0f)));
-        radiance         = lerp(radiance, _SkyColor.rgb, clamp(WorldRayDirection().y, 0.0f, 1.0f));
-        payload.radiance = radiance;
+        float3 radiance   = lerp(_EquatorColor.rgb, _GroundColor.rgb, abs(clamp(WorldRayDirection().y, -1.0f, 0.0f)));
+        radiance          = lerp(radiance, _SkyColor.rgb, clamp(WorldRayDirection().y, 0.0f, 1.0f));
+        payload.skySample = radiance;
     }
     else if(DDGI_SKYLIGHT_MODE == DDGI_SKYLIGHT_MODE_COLOR)
     {
-        payload.radiance = _AmbientColor;
+        payload.skySample = _AmbientColor;
     }
     else // Unsupported
     {
-        payload.radiance = 0.0f;
+        payload.skySample = 0.0f;
     }
 }

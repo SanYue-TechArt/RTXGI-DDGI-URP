@@ -154,10 +154,42 @@ Shader "Custom/LitRayTracing"
             [shader("closesthit")]
             void ClosestHitShader(inout DDGIPayload payload : SV_RayPayload, AttributeData attributeData : SV_IntersectionAttributes)
             {
+                if(payload.isShadowPayload)
+                {
+                    payload.isInShadow = true;
+                    return;
+                }
+
+                payload.hitKind             = HitKind();
+                payload.distance            = RayTCurrent();
+                payload.worldRayDirection   = WorldRayDirection();
+
+                if(HitKind() == HIT_KIND_TRIANGLE_BACK_FACE) return;
+
+                // ---------------------------------------
+                // Intersection geometry and brdf data.
+                // ---------------------------------------
                 IntersectionVertex vertex = (IntersectionVertex)0.0f;
                 GetCurrentIntersectionVertex(attributeData, vertex);
 
-                // 在本Shader中，我们需要计算交点处的所有直接光照，间接光照将在Update Radiance Pass阶段进行
+                float2 uv   = vertex.uv;
+                float3 N    = TransformObjectToWorldNormal(vertex.normalOS);
+                float3 T    = TransformObjectToWorldDir(vertex.tangentOS.xyz);
+                float3 P    = TransformObjectToWorld(vertex.positionOS);
+
+                // Evaluate Lighting via Per-Pixel Normal
+                const float3x3 tangentToWorld = CreateTangentToWorld(N, T, vertex.tangentOS.w * GetOddNegativeScale());
+                N = UnpackNormalScale(SAMPLE_TEXTURE2D_LOD(_BumpMap, sampler_BumpMap, uv, 0), _BumpScale);
+                N = TransformTangentToWorldDir(N, tangentToWorld, true);
+
+                const float3 albedo = SAMPLE_TEXTURE2D_LOD(_BaseMap, sampler_BaseMap, uv, 0).rgb * _BaseColor.rgb;
+
+                payload.worldPos    = P;
+                payload.worldNormal = N;
+                payload.albedo      = albedo;
+                payload.emission    = _EmissionColor.rgb;
+
+                /*// 在本Shader中，我们需要计算交点处的所有直接光照，间接光照将在Update Radiance Pass阶段进行
                 // 在SSGI中，直接光照结果来自于_CameraColorAttachment，但基于Probe的光照是无法预知场景的直接光照的，因此只能逐帧计算
                 // 在这里原本是用TraceRayInline的方式计算Shadow Ray来确定可见性，但是Unity中Closest Hit Shader里不允许使用TraceRayInline，我们只能使用递归光线跟踪
                 float3 radiance = 0.0f;
@@ -255,7 +287,7 @@ Shader "Custom/LitRayTracing"
                     radiance += (min(albedo, float3(0.9f, 0.9f, 0.9f)) * Lambert()) * SampleDDGIIrradiance(P, N, WorldRayDirection()); // SampleDDGIIrradiance的结果相当于次生光源
                 }
                 payload.radiance = radiance;
-                payload.distance = RayTCurrent();
+                payload.distance = RayTCurrent();*/
             }
             
             ENDHLSL

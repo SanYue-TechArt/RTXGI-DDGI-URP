@@ -4,6 +4,27 @@
 #include "Common/Packing.hlsl"
 
 //------------------------------------------------------------------------
+// Ray tracing payload helper.
+//------------------------------------------------------------------------
+DDGIPayload GetPrimaryPayload()
+{
+	const DDGIPayload payload = (DDGIPayload) 0;
+
+	return payload;
+}
+
+DDGIPayload GetShadowPayload()
+{
+	DDGIPayload payload = (DDGIPayload) 0;
+
+	payload.isShadowPayload = true;
+	payload.isInShadow		= false;
+
+	return payload;
+}
+
+
+//------------------------------------------------------------------------
 // Math Utility
 //------------------------------------------------------------------------
 

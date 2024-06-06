@@ -59,77 +59,62 @@ StructuredBuffer<PunctualLight> PunctualLightBuffer;
 
 struct DDGIPayload
 {
-	float3 radiance;
-	float  distance;
-
 	// For recursive shadow ray tracing.
 	bool isShadowPayload;
 	bool isInShadow;
 
-	// For ClosestHit Early Out.
-	uint rayIndex;
+	// Ray tracing api data.
+	float	distance;
+	uint	hitKind;
+	float3	worldRayDirection;
+
+	// Ray miss (sky evaluate)
+	bool	isMissed;
+	float3	skySample;
+
+	// Intersection geometry and brdf data.
+	float3 worldPos;
+	float3 worldNormal;
+	float3 albedo;
+	float3 emission;
 };
 
-// --------------------------
-// Core Lighting Settings
-// --------------------------
-float3   _StartPosition;
-float4   _ProbeRotation;
-int      _RaysPerProbe;
-float3   _ProbeSize;
-int      _MaxRaysPerProbe;
-uint3	 _ProbeCount;
-float    _NormalBias;
-float    _EnergyPreservation;
-float3   _RandomVector;
-float    _RandomAngle;
-float	 _HistoryBlendWeight;
 
-float _IndirectIntensity;
-float _NormalBiasMultiplier;
-float _ViewBiasMultiplier;
-//float _BiasMultiplier;
-//float _AxialDistanceMultiplier;
+CBUFFER_START(DDGIVolumeGpu)
+	float4   _ProbeRotation;
+	float3   _StartPosition;
+	int      _RaysPerProbe;
+	float3   _ProbeSize;
+	int      _MaxRaysPerProbe;
+	uint3	 _ProbeCount;
+	float    _NormalBias;
+	float3   _RandomVector;
+	float    _EnergyPreservation;
+	float    _RandomAngle;
+	float	 _HistoryBlendWeight;
+	float	 _IndirectIntensity;
+	float	 _NormalBiasMultiplier;
+	float	 _ViewBiasMultiplier;
+	int		 DDGI_PROBE_CLASSIFICATION;
+	int		 DDGI_PROBE_RELOCATION;
+	float	 _ProbeFixedRayBackfaceThreshold;
+	float	 _ProbeMinFrontfaceDistance;
+	int		 _DirectionalLightCount;	 // 存储场景内所有Directional光源（不考虑剔除）
+	int		 _PunctualLightCount;	 // 存储场景内所有Spot和Point光源（不考虑剔除）
+	int		 DDGI_SKYLIGHT_MODE;
+	float4	 _SkyboxTintColor;
+	float4	 _SkyColor;
+	float4	 _EquatorColor;
+	float4	 _GroundColor;
+	float4	 _AmbientColor;
+	int		 DDGI_PROBE_REDUCTION;
+	float	 _SkyboxIntensityMultiplier;
+	float	 _SkyboxExposure;
+	float	 _Pad0;
+CBUFFER_END
 
-// --------------------------
-// Probe Classification
-// --------------------------
-int DDGI_PROBE_CLASSIFICATION;
-
-// --------------------------
-// Probe Relocation
-// --------------------------
-int	  DDGI_PROBE_RELOCATION;
-float _ProbeFixedRayBackfaceThreshold;
-float _ProbeMinFrontfaceDistance;
-
-// --------------------------
-// Light Structures
-// --------------------------
-int _DirectionalLightCount;	 // 存储场景内所有Directional光源（不考虑剔除）
-int _PunctualLightCount;	 // 存储场景内所有Spot和Point光源（不考虑剔除）
-
-// --------------------------
-// Sky Lights
-// --------------------------
 TEXTURECUBE(_SkyboxCubemap); SAMPLER(sampler_SkyboxCubemap);
 
-int		DDGI_SKYLIGHT_MODE;
-// Cubemap Skybox Material
-float	_SkyboxIntensityMultiplier;
-float4	_SkyboxTintColor;
-float	_SkyboxExposure;
-// Gradient
-float4	_SkyColor;
-float4	_EquatorColor;
-float4	_GroundColor;
-// Color
-float4	_AmbientColor;
-
-// --------------------------
-// Probe Reduction
-// --------------------------
 uint3 _ReductionInputSize;
-int	  DDGI_PROBE_REDUCTION;
 
 #endif
